@@ -11,7 +11,25 @@ const firebaseConfig = {
   appId: "1:1007534039189:web:e7748176b4aad974d1bb9c"
 };
 
+console.log('Initializing Firebase app...');
 const app = initializeApp(firebaseConfig);
-export const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage)
-}) || getAuth(app); // Fallback to ensure auth is registered
+console.log('Firebase app initialized:', app);
+
+let authInstance;
+try {
+  console.log('Attempting to initialize auth with persistence...');
+  authInstance = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage)
+  });
+  console.log('Auth initialized successfully:', authInstance);
+} catch (error) {
+  console.error('Auth initialization failed:', error);
+  authInstance = getAuth(app); // Fallback
+  console.log('Using fallback auth:', authInstance);
+}
+
+if (!authInstance) {
+  throw new Error('Firebase auth could not be initialized');
+}
+
+export const auth = authInstance;
