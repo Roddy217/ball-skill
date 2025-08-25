@@ -1,6 +1,3 @@
 import React from 'react';
 import { View, Text } from 'react-native';
-
-const EventDetailsScreen = () => <View><Text>Event Details</Text></View>;
-
-export default EventDetailsScreen;
+export default function EventDetailsScreen(){ return <View style={{flex:1, justifyContent:'center', alignItems:'center', backgroundColor:'#000'}}><Text style={{color:'#fff'}}>EventDetailsScreen</Text></View>; }

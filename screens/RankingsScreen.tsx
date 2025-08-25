@@ -1,6 +1,3 @@
 import React from 'react';
 import { View, Text } from 'react-native';
-
-const RankingsScreen = () => <View><Text>Rankings</Text></View>;
-
-export default RankingsScreen;
+export default function RankingsScreen(){ return <View style={{flex:1, justifyContent:'center', alignItems:'center', backgroundColor:'#000'}}><Text style={{color:'#fff'}}>RankingsScreen</Text></View>; }

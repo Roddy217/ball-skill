@@ -1,78 +1,151 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, StyleSheet, Alert } from 'react-native';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signInAnonymously } from 'firebase/auth';
 import { auth } from '../services/firebase';
 
-const LoginScreen = () => {
+export default function LoginScreen() {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const handleLogin = async () => {
+  const onLogin = async () => {
+    if (!email || !password) return Alert.alert('Missing info', 'Please enter email and password.');
+    setBusy(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (err) {
-      setError('Invalid credentials');
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      // onAuthStateChanged in App.tsx will navigate you to the tabs
+    } catch (e: any) {
+      Alert.alert('Login failed', e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleSignup = async () => {
+  const onSignup = async () => {
+    if (!email || !password) return Alert.alert('Missing info', 'Please enter email and password.');
+    setBusy(true);
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
-    } catch (err) {
-      setError('Error creating user');
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+      // Automatically signed in after sign up
+    } catch (e: any) {
+      Alert.alert('Sign up failed', e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onReset = async () => {
+    if (!email) return Alert.alert('Missing email', 'Enter your email to receive a reset link.');
+    setBusy(true);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      Alert.alert('Check your inbox', 'Password reset email sent.');
+    } catch (e: any) {
+      Alert.alert('Reset failed', e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onGuest = async () => {
+    setBusy(true);
+    try {
+      await signInAnonymously(auth);
+    } catch (e: any) {
+      Alert.alert('Guest sign-in failed', e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
     <View style={styles.container}>
-      <LinearGradient colors={['#f97316', '#ea580c']} style={styles.header}>
-        <View style={styles.logo}>
-          <Text style={styles.logoText}>B</Text>
-        </View>
-        <Text style={styles.title}>Ball Skill Login</Text>
-      </LinearGradient>
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
-      {error && <Text style={styles.error}>{error}</Text>}
-      <TouchableOpacity style={styles.button} onPress={handleLogin}>
-        <LinearGradient colors={['#f97316', '#ea580c']} style={styles.buttonGradient}>
-          <Text style={styles.buttonText}>Login</Text>
-        </LinearGradient>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.button} onPress={handleSignup}>
-        <LinearGradient colors={['#f97316', '#ea580c']} style={styles.buttonGradient}>
-          <Text style={styles.buttonText}>Signup</Text>
-        </LinearGradient>
-      </TouchableOpacity>
+      <Text style={styles.title}>Ball Skill</Text>
+      <Text style={styles.subtitle}>Monetize Your Basketball Skills</Text>
+
+      <View style={styles.form}>
+        <Text style={styles.label}>Email</Text>
+        <TextInput
+          style={styles.input}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="you@example.com"
+          placeholderTextColor="#7a7a7a"
+        />
+
+        <Text style={styles.label}>Password</Text>
+        <TextInput
+          style={styles.input}
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
+          placeholder="••••••••"
+          placeholderTextColor="#7a7a7a"
+        />
+
+        <TouchableOpacity
+          style={[styles.primaryBtn, busy && styles.disabledBtn]}
+          onPress={mode === 'login' ? onLogin : onSignup}
+          disabled={busy}
+        >
+          {busy ? (
+            <ActivityIndicator color="#000" />
+          ) : (
+            <Text style={styles.primaryText}>{mode === 'login' ? 'Log In' : 'Create Account'}</Text>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => setMode(mode === 'login' ? 'signup' : 'login')}>
+          <Text style={styles.link}>
+            {mode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={onReset}>
+          <Text style={styles.link}>Forgot password?</Text>
+        </TouchableOpacity>
+
+        <View style={styles.divider} />
+
+        <TouchableOpacity style={styles.ghostBtn} onPress={onGuest} disabled={busy}>
+          <Text style={styles.ghostText}>Continue as Guest</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
-};
+}
+
+const ORANGE = '#FF6600';
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#FFFFFF' },
-  header: { padding: 40, alignItems: 'center' },
-  logo: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
-  logoText: { color: '#FF6600', fontSize: 24, fontWeight: 'bold' },
-  title: { color: '#FFFFFF', fontSize: 32, fontWeight: 'bold' },
-  input: { padding: 10, marginBottom: 10, borderWidth: 1, borderColor: '#000000', borderRadius: 5 },
-  button: { borderRadius: 12, overflow: 'hidden', marginTop: 10 },
-  buttonGradient: { paddingVertical: 16, paddingHorizontal: 32 },
-  buttonText: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', textAlign: 'center' },
-  error: { color: 'red', marginBottom: 10 },
+  container: { flex: 1, backgroundColor: '#000', paddingHorizontal: 24, justifyContent: 'center' },
+  title: { color: '#fff', fontSize: 32, fontWeight: '800', textAlign: 'center', marginBottom: 6 },
+  subtitle: { color: '#bbb', fontSize: 14, textAlign: 'center', marginBottom: 28 },
+  form: { gap: 12 },
+  label: { color: '#bbb', marginBottom: 4 },
+  input: {
+    backgroundColor: '#111',
+    borderColor: '#333',
+    borderWidth: 1,
+    borderRadius: 12,
+    color: '#fff',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  primaryBtn: {
+    backgroundColor: ORANGE,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  primaryText: { color: '#000', fontWeight: '700', fontSize: 16 },
+  link: { color: ORANGE, textAlign: 'center', marginTop: 12, fontWeight: '600' },
+  divider: { height: 1, backgroundColor: '#222', marginVertical: 18 },
+  ghostBtn: { borderColor: '#333', borderWidth: 1, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  ghostText: { color: '#fff', fontWeight: '600' },
+  disabledBtn: { opacity: 0.6 },
 });
-
-export default LoginScreen;

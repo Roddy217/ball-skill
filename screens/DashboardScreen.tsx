@@ -1,6 +1,3 @@
 import React from 'react';
 import { View, Text } from 'react-native';
-
-const DashboardScreen = () => <View><Text>Dashboard</Text></View>;
-
-export default DashboardScreen;
+export default function DashboardScreen(){ return <View style={{flex:1, justifyContent:'center', alignItems:'center', backgroundColor:'#000'}}><Text style={{color:'#fff'}}>DashboardScreen</Text></View>; }

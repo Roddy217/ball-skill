@@ -11,9 +11,7 @@
       "resizeMode": "contain",
       "backgroundColor": "#000000"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ballskill.app"
@@ -21,7 +19,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/ballskill-logo.png",
-        "backgroundColor": "#FF6600"
+        "backgroundColor": "#f97316"
       },
       "package": "com.ballskill.app"
     },
