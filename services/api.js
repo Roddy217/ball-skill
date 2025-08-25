@@ -38,6 +38,23 @@ class ApiService {
     const qs = new URLSearchParams(filters);
     return this.makeRequest(`/events?${qs}`);
   }
+  async getCredits(email) {
+    const res = await fetch(`${API_BASE_URL}/credits/${encodeURIComponent(email)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "Failed to fetch credits");
+    return data; // { success, balance }
+  }
+
+  async grantCredits(email, delta) {
+    const res = await fetch(`${API_BASE_URL}/credits/grant`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, delta }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "Failed to grant credits");
+    return data; // { success, balance }
+  }
 }
 
 export default new ApiService();

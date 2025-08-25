@@ -46,6 +46,18 @@ function getUserCredits(email) {
 // ---- Health ----
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// ---- Credits (fetch balance) ----
+app.get('/api/credits/:email', (req, res) => {
+  try {
+    const { email } = req.params;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    const wallet = credits.get(email) || { balance: 0 };
+    res.json({ success: true, balance: wallet.balance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---- Stripe PaymentIntent (kept) ----
 app.post('/api/create-payment-intent', async (req, res) => {
   try {
