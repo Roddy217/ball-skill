@@ -1,59 +1,77 @@
-// Minimal API wrapper
-import { auth } from "./firebase";
+// Minimal API wrapper (single source of truth)
+import { Platform } from 'react-native';
+import { auth } from './firebase';
 
-import { Platform } from "react-native";
-
-// Mac’s LAN IP for real iPhone access
-const LAN_IP = "192.168.1.244";
-
+// --- Networking base ---
+// iPhone Expo Go hits your Mac's LAN IP; iOS Simulator can use localhost
+const LAN_IP = '192.168.1.244'; // <-- set to your Mac LAN IP
 export const API_BASE_URL =
-  Platform.OS === "ios" || Platform.OS === "android"
-    ? `http://${LAN_IP}:3001/api`   // real iPhone uses your LAN IP
-    : "http://localhost:3001/api";  // iOS Simulator / Web uses localhost
-
+  Platform.OS === 'ios' || Platform.OS === 'android'
+    ? `http://${LAN_IP}:3001/api`
+    : 'http://localhost:3001/api';
 
 class ApiService {
   async getAuthToken() {
-    const user = auth.currentUser;
+    const user = auth?.currentUser;
     return user ? await user.getIdToken() : null;
   }
 
   async makeRequest(endpoint, options = {}) {
     const token = await this.getAuthToken();
-    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    };
     if (token) headers.Authorization = `Bearer ${token}`;
 
     const res = await fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.error || "API request failed");
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok || data?.success === false) {
+      throw new Error(data?.error || `API request failed: ${res.status}`);
+    }
     return data;
   }
 
-  // Example endpoints
-  getUser(userId) {
-    return this.makeRequest(`/users/${userId}`);
-  }
-
+  // ---- Convenience helpers ----
   getEvents(filters = {}) {
     const qs = new URLSearchParams(filters);
-    return this.makeRequest(`/events?${qs}`);
-  }
-  async getCredits(email) {
-    const res = await fetch(`${API_BASE_URL}/credits/${encodeURIComponent(email)}`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.error || "Failed to fetch credits");
-    return data; // { success, balance }
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return this.makeRequest(`/events${suffix}`);
   }
 
-  async grantCredits(email, delta) {
-    const res = await fetch(`${API_BASE_URL}/credits/grant`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+  createEvent(payload) {
+    return this.makeRequest(`/events`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  submitResult(eventId, payload) {
+    return this.makeRequest(`/events/${eventId}/submit`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // Credits
+  getCredits(email) {
+    return this.makeRequest(`/credits/${encodeURIComponent(email)}`);
+  }
+
+  grantCredits(email, delta) {
+    return this.makeRequest(`/credits/grant`, {
+      method: 'POST',
       body: JSON.stringify({ email, delta }),
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.error || "Failed to grant credits");
-    return data; // { success, balance }
+  }
+
+  // Head-to-Head compare
+  compare(eventId, userA, userB, drills) {
+    return this.makeRequest(`/events/${eventId}/compare`, {
+      method: 'POST',
+      body: JSON.stringify({ userA, userB, drills }),
+    });
   }
 }
 

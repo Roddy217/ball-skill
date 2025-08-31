@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Alert,
   ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform
@@ -8,6 +8,42 @@ import api from '../services/api';
 type DrillType = '3PT' | 'FT' | '2PT' | 'LAYUP';
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', WHITE = '#fff';
+
+function formatMs(ms: number) {
+  if (!Number.isFinite(ms) || ms < 0) return '0:00.000';
+  const hours = Math.floor(ms / 3600000);
+  ms %= 3600000;
+  const mins = Math.floor(ms / 60000);
+  ms %= 60000;
+  const secs = Math.floor(ms / 1000);
+  const msec = Math.floor(ms % 1000);
+  const pad2 = (n: number) => n.toString().padStart(2, '0');
+  const pad3 = (n: number) => n.toString().padStart(3, '0');
+  return hours > 0
+    ? `${hours}:${pad2(mins)}:${pad2(secs)}.${pad3(msec)}`
+    : `${mins}:${pad2(secs)}.${pad3(msec)}`;
+}
+
+function parseTimeInput(input: string): number {
+  const s = input.trim();
+  // Accept ms only
+  if (/^\d+$/.test(s)) return Number(s);
+  // Accept mm:ss(.mmm?) or ss(.mmm?)
+  const mmss = /^(\d+):([0-5]?\d)(?:\.(\d{1,3}))?$/.exec(s);
+  if (mmss) {
+    const mm = Number(mmss[1]);
+    const ss = Number(mmss[2]);
+    const ms = Number((mmss[3] || '0').padEnd(3, '0'));
+    return mm * 60000 + ss * 1000 + ms;
+  }
+  const ssms = /^(\d+)(?:\.(\d{1,3}))?$/.exec(s);
+  if (ssms) {
+    const ss = Number(ssms[1]);
+    const ms = Number((ssms[2] || '0').padEnd(3, '0'));
+    return ss * 1000 + ms;
+  }
+  return 0;
+}
 
 export default function AdminScreen() {
   const [loading, setLoading] = useState(false);
@@ -25,11 +61,25 @@ export default function AdminScreen() {
   const [drillType, setDrillType] = useState<DrillType>('3PT');
   const [made, setMade] = useState('7');
   const [attempts, setAttempts] = useState('10');
-  const [timeMs, setTimeMs] = useState('45000');
+  const [timeInput, setTimeInput] = useState('45.000'); // accepts mm:ss.mmm, ss.mmm, or ms
+  const timeMs = useMemo(() => parseTimeInput(timeInput), [timeInput]);
 
   // Credits (demo grant)
   const [creditEmail, setCreditEmail] = useState('test@ballskill.com');
   const [delta, setDelta] = useState('25');
+
+  // Simple email autocomplete: start with common emails, augment as you submit
+  const [knownEmails, setKnownEmails] = useState<string[]>([
+    'test@ballskill.com', 'guest@ballskill.com', 'admin@ballskill.com'
+  ]);
+  const emailSuggestions = useMemo(
+    () => knownEmails.filter(e => e.toLowerCase().includes((email || '').toLowerCase()) && e !== email).slice(0,5),
+    [email, knownEmails]
+  );
+  const addKnownEmail = (e: string) => {
+    if (!e) return;
+    setKnownEmails(prev => prev.includes(e) ? prev : [e, ...prev].slice(0,50));
+  };
 
   const toggleDrill = (d: DrillType) => {
     setDrills(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
@@ -51,15 +101,12 @@ export default function AdminScreen() {
   const createEvent = async () => {
     setLoading(true);
     try {
-      const res = await api.makeRequest('/events', {
-        method: 'POST',
-        body: JSON.stringify({
-          name,
-          feeCents: Number(feeCents) || 0,
-          drillsEnabled: drills,
-          locationType,
-          dateISO: new Date().toISOString(),
-        }),
+      const res = await api.createEvent({
+        name,
+        feeCents: Number(feeCents) || 0,
+        drillsEnabled: drills,
+        locationType,
+        dateISO: new Date().toISOString(),
       });
       Alert.alert('Created', res.event?.name || 'Event created');
       await loadEvents();
@@ -74,17 +121,15 @@ export default function AdminScreen() {
     if (!eventId) return Alert.alert('Pick event', 'Select an event first.');
     setLoading(true);
     try {
-      await api.makeRequest(`/events/${eventId}/submit`, {
-        method: 'POST',
-        body: JSON.stringify({
-          email,
-          drillType,
-          made: Number(made) || 0,
-          attempts: Number(attempts) || 0,
-          timeMs: Number(timeMs) || 0,
-        }),
+      await api.submitResult(eventId, {
+        email,
+        drillType,
+        made: Number(made) || 0,
+        attempts: Number(attempts) || 0,
+        timeMs: timeMs || 0,
       });
-      Alert.alert('Saved', 'Drill result recorded.');
+      addKnownEmail(email);
+      Alert.alert('Saved', `Drill recorded. Time = ${formatMs(timeMs)}`);
     } catch (e:any) {
       Alert.alert('Error', e.message);
     } finally {
@@ -96,6 +141,7 @@ export default function AdminScreen() {
     setLoading(true);
     try {
       const res = await api.grantCredits(creditEmail, Number(delta) || 0);
+      addKnownEmail(creditEmail);
       Alert.alert('Credits Updated', `New balance: ${res.balance}`);
     } catch (e:any) {
       Alert.alert('Error', e.message);
@@ -116,14 +162,12 @@ export default function AdminScreen() {
         { email: users[1], drillType: 'FT',  made: 8, attempts: 10, timeMs: 36000 },
       ];
       for (const r of seed) {
-        await api.makeRequest(`/events/${eventId}/submit`, {
-          method: 'POST',
-          body: JSON.stringify(r),
-        });
+        await api.submitResult(eventId, r);
+        addKnownEmail(r.email);
       }
       Alert.alert('Seeded', 'Added sample results for test & guest.');
     } catch (e:any) {
-      Alert.alert('Error', e.message);
+      Alert.alert('Error', e.message || 'Seed failed');
     } finally {
       setLoading(false);
     }
@@ -162,17 +206,13 @@ export default function AdminScreen() {
               style={[s.pill, locationType === 'in_person' && s.pillOn]}
               onPress={() => setLocationType('in_person')}
             >
-              <Text style={[s.pillText, locationType === 'in_person' && s.pillTextOn]}>
-                In-Person
-              </Text>
+              <Text style={[s.pillText, locationType === 'in_person' && s.pillTextOn]}>In-Person</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[s.pill, locationType === 'online' && s.pillOn]}
               onPress={() => setLocationType('online')}
             >
-              <Text style={[s.pillText, locationType === 'online' && s.pillTextOn]}>
-                Online
-              </Text>
+              <Text style={[s.pillText, locationType === 'online' && s.pillTextOn]}>Online</Text>
             </TouchableOpacity>
           </View>
 
@@ -204,7 +244,26 @@ export default function AdminScreen() {
         <View style={s.card}>
           <Text style={s.cardTitle}>Enter Drill Result</Text>
           <Text style={s.fieldLabel}>Player Email</Text>
-          <TextInput style={s.input} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
+          <TextInput
+            style={s.input}
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            placeholder="player@example.com"
+            placeholderTextColor="#666"
+          />
+          {!!emailSuggestions.length && (
+            <View style={{ marginTop: 6 }}>
+              <Text style={{ color: MUTED, marginBottom: 6 }}>Suggestions</Text>
+              {emailSuggestions.map(sug => (
+                <TouchableOpacity key={sug} onPress={() => setEmail(sug)} style={[s.pill, { alignSelf:'flex-start' }]}>
+                  <Text style={s.pillText}>{sug}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
           <Text style={s.fieldLabel}>Drill</Text>
           <View style={s.row}>
             {(['3PT','FT','2PT','LAYUP'] as DrillType[]).map(d => (
@@ -213,12 +272,23 @@ export default function AdminScreen() {
               </TouchableOpacity>
             ))}
           </View>
+
           <Text style={s.fieldLabel}>Made</Text>
           <TextInput style={s.input} value={made} onChangeText={setMade} keyboardType="numeric" />
           <Text style={s.fieldLabel}>Attempts</Text>
           <TextInput style={s.input} value={attempts} onChangeText={setAttempts} keyboardType="numeric" />
-          <Text style={s.fieldLabel}>Time (ms)</Text>
-          <TextInput style={s.input} value={timeMs} onChangeText={setTimeMs} keyboardType="numeric" />
+
+          <Text style={s.fieldLabel}>Time</Text>
+          <TextInput
+            style={s.input}
+            value={timeInput}
+            onChangeText={setTimeInput}
+            placeholder="mm:ss.mmm or ss.mmm or ms"
+            placeholderTextColor="#666"
+            keyboardType="numbers-and-punctuation"
+          />
+          <Text style={{ color: MUTED, marginTop: 4 }}>Parsed = {formatMs(timeMs)}</Text>
+
           <TouchableOpacity style={[s.btn, { marginTop: 10 }]} onPress={submitResult} disabled={!eventId || loading}>
             <Text style={s.btnText}>Save Result</Text>
           </TouchableOpacity>
