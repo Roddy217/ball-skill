@@ -1,333 +1,425 @@
-import React, { useEffect, useMemo, useState } from 'react';
+// screens/AdminScreen.tsx — Admin-only (Credits + Events)
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, Alert,
-  ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  RefreshControl,
+  StyleSheet,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
-import api from '../services/api';
+import api, { toDollars } from '../services/api';
+import { auth } from '../services/firebase';
 
-type DrillType = '3PT' | 'FT' | '2PT' | 'LAYUP';
-
-const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', WHITE = '#fff';
-
-function formatMs(ms: number) {
-  if (!Number.isFinite(ms) || ms < 0) return '0:00.000';
-  const hours = Math.floor(ms / 3600000);
-  ms %= 3600000;
-  const mins = Math.floor(ms / 60000);
-  ms %= 60000;
-  const secs = Math.floor(ms / 1000);
-  const msec = Math.floor(ms % 1000);
-  const pad2 = (n: number) => n.toString().padStart(2, '0');
-  const pad3 = (n: number) => n.toString().padStart(3, '0');
-  return hours > 0
-    ? `${hours}:${pad2(mins)}:${pad2(secs)}.${pad3(msec)}`
-    : `${mins}:${pad2(secs)}.${pad3(msec)}`;
-}
-
-function parseTimeInput(input: string): number {
-  const s = input.trim();
-  // Accept ms only
-  if (/^\d+$/.test(s)) return Number(s);
-  // Accept mm:ss(.mmm?) or ss(.mmm?)
-  const mmss = /^(\d+):([0-5]?\d)(?:\.(\d{1,3}))?$/.exec(s);
-  if (mmss) {
-    const mm = Number(mmss[1]);
-    const ss = Number(mmss[2]);
-    const ms = Number((mmss[3] || '0').padEnd(3, '0'));
-    return mm * 60000 + ss * 1000 + ms;
-  }
-  const ssms = /^(\d+)(?:\.(\d{1,3}))?$/.exec(s);
-  if (ssms) {
-    const ss = Number(ssms[1]);
-    const ms = Number((ssms[2] || '0').padEnd(3, '0'));
-    return ss * 1000 + ms;
-  }
-  return 0;
-}
+type EventItem = {
+  id: string;
+  title?: string;
+  name?: string;
+  feeCents?: number;
+  status?: string;
+};
 
 export default function AdminScreen() {
-  const [loading, setLoading] = useState(false);
+  const signedInEmail = auth?.currentUser?.email || '';
 
-  // Events
-  const [events, setEvents] = useState<any[]>([]);
-  const [name, setName] = useState('Ball Skill – Demo Event');
-  const [feeCents, setFeeCents] = useState('0');
-  const [drills, setDrills] = useState<DrillType[]>(['3PT','FT','2PT','LAYUP']);
-  const [locationType, setLocationType] = useState<'in_person' | 'online'>('in_person');
-  const [eventId, setEventId] = useState<string>('');
+  // ===== Credits state =====
+  const [creditEmail, setCreditEmail] = useState<string>(signedInEmail);
+  const [balance, setBalance] = useState<number>(0);
+  const [delta, setDelta] = useState<string>('0'); // integer string (credits)
+  const [history, setHistory] = useState<any[]>([]);
+  const [creditBusy, setCreditBusy] = useState<boolean>(false);
 
-  // Drill submission
-  const [email, setEmail] = useState('test@ballskill.com');
-  const [drillType, setDrillType] = useState<DrillType>('3PT');
-  const [made, setMade] = useState('7');
-  const [attempts, setAttempts] = useState('10');
-  const [timeInput, setTimeInput] = useState('45.000'); // accepts mm:ss.mmm, ss.mmm, or ms
-  const timeMs = useMemo(() => parseTimeInput(timeInput), [timeInput]);
+  // ===== Events state =====
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [eventsBusy, setEventsBusy] = useState<boolean>(true);
 
-  // Credits (demo grant)
-  const [creditEmail, setCreditEmail] = useState('test@ballskill.com');
-  const [delta, setDelta] = useState('25');
+  // Create form
+  const [newTitle, setNewTitle] = useState<string>('Ball Skill – Demo Event');
+  const [newFeeCents, setNewFeeCents] = useState<string>('0');
 
-  // Simple email autocomplete: start with common emails, augment as you submit
-  const [knownEmails, setKnownEmails] = useState<string[]>([
-    'test@ballskill.com', 'guest@ballskill.com', 'admin@ballskill.com'
-  ]);
-  const emailSuggestions = useMemo(
-    () => knownEmails.filter(e => e.toLowerCase().includes((email || '').toLowerCase()) && e !== email).slice(0,5),
-    [email, knownEmails]
-  );
-  const addKnownEmail = (e: string) => {
-    if (!e) return;
-    setKnownEmails(prev => prev.includes(e) ? prev : [e, ...prev].slice(0,50));
-  };
+  // Inline edit
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState<string>('');
+  const [editFeeCents, setEditFeeCents] = useState<string>('0');
+  const [rowBusyId, setRowBusyId] = useState<string | null>(null);
 
-  const toggleDrill = (d: DrillType) => {
-    setDrills(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
-  };
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const loadEvents = async () => {
-    setLoading(true);
-    try {
-      const res = await api.getEvents();
-      setEvents(res.events || []);
-      if (!eventId && res.events?.length) setEventId(res.events[0].id);
-    } catch (e:any) {
-      Alert.alert('Error', e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // ===== Helpers =====
+  const friendly = (e: EventItem) => e.title ?? e.name ?? e.id;
 
-  const createEvent = async () => {
-    setLoading(true);
-    try {
-      const res = await api.createEvent({
-        name,
-        feeCents: Number(feeCents) || 0,
-        drillsEnabled: drills,
-        locationType,
-        dateISO: new Date().toISOString(),
-      });
-      Alert.alert('Created', res.event?.name || 'Event created');
-      await loadEvents();
-    } catch (e:any) {
-      Alert.alert('Error', e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // ===== Credits actions =====
+  const loadCredits = useCallback(
+    async (targetEmail?: string) => {
+      const who = (((targetEmail ?? creditEmail) || '') as string).trim();
+      if (!who) return;
+      setCreditBusy(true);
+      try {
+        const res = await api.getCredits(who); // { balance }
+        const bal = Number(res?.balance ?? 0);
+        setBalance(Number.isFinite(bal) ? bal : 0);
 
-  const submitResult = async () => {
-    if (!eventId) return Alert.alert('Pick event', 'Select an event first.');
-    setLoading(true);
-    try {
-      await api.submitResult(eventId, {
-        email,
-        drillType,
-        made: Number(made) || 0,
-        attempts: Number(attempts) || 0,
-        timeMs: timeMs || 0,
-      });
-      addKnownEmail(email);
-      Alert.alert('Saved', `Drill recorded. Time = ${formatMs(timeMs)}`);
-    } catch (e:any) {
-      Alert.alert('Error', e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const grantCredits = async () => {
-    setLoading(true);
-    try {
-      const res = await api.grantCredits(creditEmail, Number(delta) || 0);
-      addKnownEmail(creditEmail);
-      Alert.alert('Credits Updated', `New balance: ${res.balance}`);
-    } catch (e:any) {
-      Alert.alert('Error', e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const seedDemoData = async () => {
-    if (!eventId) return Alert.alert('Pick event', 'Select an event first.');
-    setLoading(true);
-    try {
-      const users = ['test@ballskill.com','guest@ballskill.com'];
-      const seed = [
-        { email: users[0], drillType: '3PT', made: 7, attempts: 10, timeMs: 42000 },
-        { email: users[0], drillType: 'FT',  made: 8, attempts: 10, timeMs: 35000 },
-        { email: users[1], drillType: '3PT', made: 6, attempts: 10, timeMs: 44000 },
-        { email: users[1], drillType: 'FT',  made: 8, attempts: 10, timeMs: 36000 },
-      ];
-      for (const r of seed) {
-        await api.submitResult(eventId, r);
-        addKnownEmail(r.email);
+        // history: array or {history: []}
+        try {
+          const hist = await api.history(who);
+          const list = Array.isArray(hist?.history)
+            ? hist.history
+            : Array.isArray(hist)
+            ? hist
+            : [];
+          setHistory(list);
+        } catch {
+          setHistory([]);
+        }
+      } catch (e: any) {
+        Alert.alert('Credits error', e?.message ?? String(e));
+      } finally {
+        setCreditBusy(false);
       }
-      Alert.alert('Seeded', 'Added sample results for test & guest.');
-    } catch (e:any) {
-      Alert.alert('Error', e.message || 'Seed failed');
+    },
+    [creditEmail]
+  );
+
+  const applyDelta = useCallback(
+    async (sign: 1 | -1) => {
+      const who = ((creditEmail || '') as string).trim();
+      if (!who) {
+        Alert.alert('Email required', 'Enter an email to grant/deduct credits.');
+        return;
+      }
+      const amt = Number.parseInt(delta, 10);
+      if (!Number.isFinite(amt)) {
+        Alert.alert('Amount invalid', 'Enter a whole number of credits (cents).');
+        return;
+      }
+      setCreditBusy(true);
+      try {
+        const res = await api.applyCredits(who, sign * amt, `admin:${sign > 0 ? 'grant' : 'deduct'}`);
+        const bal = Number(res?.balance ?? 0);
+        setBalance(Number.isFinite(bal) ? bal : 0);
+        await loadCredits(who);
+      } catch (e: any) {
+        Alert.alert('Apply failed', e?.message ?? String(e));
+      } finally {
+        setCreditBusy(false);
+      }
+    },
+    [creditEmail, delta, loadCredits]
+  );
+
+  // ===== Events actions =====
+  const loadEvents = useCallback(async () => {
+    setEventsBusy(true);
+    try {
+      const list = await api.getEvents();
+      setEvents(Array.isArray(list) ? list : []);
+    } catch (e: any) {
+      Alert.alert('Events error', e?.message ?? String(e));
     } finally {
-      setLoading(false);
+      setEventsBusy(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadEvents(); }, []);
+  const createEvent = useCallback(async () => {
+    const title = (newTitle || '').trim();
+    const fee = Number.parseInt(newFeeCents || '0', 10);
+    if (!title) {
+      Alert.alert('Title required', 'Please enter an event title.');
+      return;
+    }
+    if (!Number.isFinite(fee) || fee < 0) {
+      Alert.alert('Fee invalid', 'Enter fee in credits (cents) as a non-negative integer.');
+      return;
+    }
+    setEventsBusy(true);
+    try {
+      // keep both title and name for compatibility
+      await api.createEvent({
+        title,
+        name: title,
+        feeCents: fee,
+        status: 'OPEN',
+        isActive: true,
+        published: true,
+      });
+      setNewTitle('Ball Skill – Demo Event');
+      setNewFeeCents('0');
+      await loadEvents();
+    } catch (e: any) {
+      Alert.alert('Create failed', e?.message ?? String(e));
+    } finally {
+      setEventsBusy(false);
+    }
+  }, [newTitle, newFeeCents, loadEvents]);
 
+  const startEdit = useCallback((ev: EventItem) => {
+    setEditId(ev.id);
+    setEditTitle(ev.title ?? ev.name ?? '');
+    setEditFeeCents(String(Number(ev.feeCents ?? 0)));
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditId(null);
+    setEditTitle('');
+    setEditFeeCents('0');
+  }, []);
+
+  const saveEdit = useCallback(async () => {
+    if (!editId) return;
+    const patch: any = {};
+    const title = (editTitle || '').trim();
+    if (title) {
+      patch.title = title;
+      patch.name = title;
+    }
+    const cents = Number.parseInt(editFeeCents || '0', 10);
+    if (Number.isFinite(cents) && cents >= 0) {
+      patch.feeCents = cents;
+      patch.priceCents = cents; // in case server uses this field
+    }
+    setRowBusyId(editId);
+    try {
+      await api.updateEvent(editId, patch);
+      cancelEdit();
+      await loadEvents();
+    } catch (e: any) {
+      Alert.alert('Update failed', e?.message ?? String(e));
+    } finally {
+      setRowBusyId(null);
+    }
+  }, [editId, editTitle, editFeeCents, cancelEdit, loadEvents]);
+
+  const removeEvent = useCallback(
+    async (id: string) => {
+      Alert.alert('Delete event', 'Are you sure you want to delete this event?', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setRowBusyId(id);
+            try {
+              await api.deleteEvent(id);
+              if (editId === id) cancelEdit();
+              await loadEvents();
+            } catch (e: any) {
+              Alert.alert('Delete failed', e?.message ?? String(e));
+            } finally {
+              setRowBusyId(null);
+            }
+          },
+        },
+      ]);
+    },
+    [editId, cancelEdit, loadEvents]
+  );
+
+  // ===== Effects =====
+  useEffect(() => {
+    loadEvents();
+  }, [loadEvents]);
+
+  useEffect(() => {
+    if (creditEmail) loadCredits(creditEmail);
+  }, [creditEmail, loadCredits]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadEvents(), loadCredits(((creditEmail || '') as string).trim() || signedInEmail)]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadEvents, loadCredits, creditEmail, signedInEmail]);
+
+  // ===== Render =====
   return (
-    <KeyboardAvoidingView style={{ flex:1, backgroundColor:'#000' }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={{ padding:16, paddingBottom:96 }}>
-        <Text style={s.h1}>Admin</Text>
-        <Text style={s.sub}>Create events, seed data, record drills, grant credits.</Text>
-
-        {/* Create Event */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Create Event</Text>
-
-          <Text style={s.fieldLabel}>Name</Text>
-          <TextInput style={s.input} value={name} onChangeText={setName} />
-
-          <Text style={s.fieldLabel}>Fee (cents)</Text>
-          <TextInput style={s.input} value={feeCents} onChangeText={setFeeCents} keyboardType="numeric" />
-
-          <Text style={s.fieldLabel}>Drills</Text>
-          <View style={s.row}>
-            {(['3PT','FT','2PT','LAYUP'] as DrillType[]).map(d => (
-              <TouchableOpacity key={d} style={[s.pill, drills.includes(d) && s.pillOn]} onPress={() => toggleDrill(d)}>
-                <Text style={[s.pillText, drills.includes(d) && s.pillTextOn]}>{d}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={[s.fieldLabel, { marginTop: 8 }]}>Event Type</Text>
-          <View style={[s.row, { marginTop: 6 }]}>
-            <TouchableOpacity
-              style={[s.pill, locationType === 'in_person' && s.pillOn]}
-              onPress={() => setLocationType('in_person')}
-            >
-              <Text style={[s.pillText, locationType === 'in_person' && s.pillTextOn]}>In-Person</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[s.pill, locationType === 'online' && s.pillOn]}
-              onPress={() => setLocationType('online')}
-            >
-              <Text style={[s.pillText, locationType === 'online' && s.pillTextOn]}>Online</Text>
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity style={[s.btn, loading && s.btnDisabled]} onPress={createEvent} disabled={loading}>
-            <Text style={s.btnText}>{loading ? 'Working…' : 'Create Event'}</Text>
+    <ScrollView style={s.root} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+      {/* ===== Credits Panel ===== */}
+      <View style={s.section}>
+        <Text style={s.h1}>Credits</Text>
+        <Text style={s.label}>User email</Text>
+        <TextInput
+          placeholder="email@example.com"
+          placeholderTextColor="#888"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={creditEmail}
+          onChangeText={setCreditEmail}
+          style={s.input}
+        />
+        <View style={s.row}>
+          <TouchableOpacity onPress={() => loadCredits()} style={[s.btn, s.btnSecondary]} disabled={creditBusy}>
+            {creditBusy ? <ActivityIndicator /> : <Text style={s.btnText}>Refresh Balance</Text>}
           </TouchableOpacity>
+          <View style={s.balancePill}>
+            <Text style={s.balanceText}>Balance: {balance} credits</Text>
+            <Text style={s.balanceSub}>(${toDollars(balance)})</Text>
+          </View>
         </View>
-
-        {/* Event List / Select */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Events</Text>
-          {loading && <ActivityIndicator color={ORANGE} />}
-          {(events || []).map(ev => (
-            <TouchableOpacity key={ev.id} style={[s.eventItem, ev.id===eventId && s.eventItemActive]} onPress={() => setEventId(ev.id)}>
-              <Text style={s.eventTitle}>{ev.name}</Text>
-              <Text style={s.eventMeta}>
-                {new Date(ev.dateISO).toLocaleString()} • Type: {ev.locationType === 'in_person' ? 'In-Person' : 'Online'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          {!events?.length && <Text style={s.eventMeta}>No events yet.</Text>}
-
-          <TouchableOpacity style={[s.btn, { marginTop: 10 }]} onPress={seedDemoData} disabled={!eventId || loading}>
-            <Text style={s.btnText}>Seed Demo Data (test vs guest)</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Drill Submission */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Enter Drill Result</Text>
-          <Text style={s.fieldLabel}>Player Email</Text>
+        <View style={[s.row, { marginTop: 8 }]}>
           <TextInput
-            style={s.input}
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="player@example.com"
-            placeholderTextColor="#666"
+            placeholder="amount (credits)"
+            placeholderTextColor="#888"
+            keyboardType="number-pad"
+            value={delta}
+            onChangeText={setDelta}
+            style={[s.input, { flex: 1 }]}
           />
-          {!!emailSuggestions.length && (
-            <View style={{ marginTop: 6 }}>
-              <Text style={{ color: MUTED, marginBottom: 6 }}>Suggestions</Text>
-              {emailSuggestions.map(sug => (
-                <TouchableOpacity key={sug} onPress={() => setEmail(sug)} style={[s.pill, { alignSelf:'flex-start' }]}>
-                  <Text style={s.pillText}>{sug}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-
-          <Text style={s.fieldLabel}>Drill</Text>
-          <View style={s.row}>
-            {(['3PT','FT','2PT','LAYUP'] as DrillType[]).map(d => (
-              <TouchableOpacity key={d} style={[s.pill, drillType === d && s.pillOn]} onPress={() => setDrillType(d)}>
-                <Text style={[s.pillText, drillType === d && s.pillTextOn]}>{d}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={s.fieldLabel}>Made</Text>
-          <TextInput style={s.input} value={made} onChangeText={setMade} keyboardType="numeric" />
-          <Text style={s.fieldLabel}>Attempts</Text>
-          <TextInput style={s.input} value={attempts} onChangeText={setAttempts} keyboardType="numeric" />
-
-          <Text style={s.fieldLabel}>Time</Text>
-          <TextInput
-            style={s.input}
-            value={timeInput}
-            onChangeText={setTimeInput}
-            placeholder="mm:ss.mmm or ss.mmm or ms"
-            placeholderTextColor="#666"
-            keyboardType="numbers-and-punctuation"
-          />
-          <Text style={{ color: MUTED, marginTop: 4 }}>Parsed = {formatMs(timeMs)}</Text>
-
-          <TouchableOpacity style={[s.btn, { marginTop: 10 }]} onPress={submitResult} disabled={!eventId || loading}>
-            <Text style={s.btnText}>Save Result</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Credits (demo) */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Grant Credits (Demo)</Text>
-          <Text style={s.fieldLabel}>Email</Text>
-          <TextInput style={s.input} value={creditEmail} onChangeText={setCreditEmail} autoCapitalize="none" keyboardType="email-address" />
-          <Text style={s.fieldLabel}>Delta</Text>
-          <TextInput style={s.input} value={delta} onChangeText={setDelta} keyboardType="numeric" />
-          <TouchableOpacity style={[s.btn, { marginTop: 10 }]} onPress={grantCredits} disabled={loading}>
+          <TouchableOpacity onPress={() => applyDelta(1)} style={[s.btn, s.btnPrimary, { marginLeft: 8 }]} disabled={creditBusy}>
             <Text style={s.btnText}>Grant</Text>
           </TouchableOpacity>
+          <TouchableOpacity onPress={() => applyDelta(-1)} style={[s.btn, s.btnDanger, { marginLeft: 8 }]} disabled={creditBusy}>
+            <Text style={s.btnText}>Deduct</Text>
+          </TouchableOpacity>
         </View>
+        <View style={{ marginTop: 10 }}>
+          <Text style={s.subH}>Recent Wallet History</Text>
+          {history.slice(0, 10).map((h, idx) => (
+            <Text key={idx} style={s.historyItem}>
+              {new Date(h?.at ?? Date.now()).toLocaleString()} — {h?.delta ?? 0} ({h?.reason ?? ''})
+            </Text>
+          ))}
+          {!history.length && <Text style={s.muted}>No history.</Text>}
+        </View>
+      </View>
 
-      </ScrollView>
-    </KeyboardAvoidingView>
+      {/* ===== Events Panel ===== */}
+      <View style={s.section}>
+        <Text style={s.h1}>Events</Text>
+
+        {/* Create new */}
+        <Text style={s.label}>Title</Text>
+        <TextInput
+          placeholder="Event title"
+          placeholderTextColor="#888"
+          value={newTitle}
+          onChangeText={setNewTitle}
+          style={s.input}
+        />
+        <Text style={s.label}>Fee (credits, cents)</Text>
+        <TextInput
+          placeholder="e.g. 500"
+          placeholderTextColor="#888"
+          keyboardType="number-pad"
+          value={newFeeCents}
+          onChangeText={setNewFeeCents}
+          style={s.input}
+        />
+        <TouchableOpacity onPress={createEvent} style={[s.btn, s.btnPrimary]} disabled={eventsBusy}>
+          {eventsBusy ? <ActivityIndicator /> : <Text style={s.btnText}>Create Event</Text>}
+        </TouchableOpacity>
+
+        {/* List / edit / delete */}
+        <View style={{ marginTop: 14 }}>
+          {eventsBusy && <Text style={s.muted}>Loading events…</Text>}
+          {!eventsBusy && !events.length && <Text style={s.muted}>No events found.</Text>}
+
+          {events.map((e) => {
+            const editing = editId === e.id;
+            const busy = rowBusyId === e.id;
+            if (editing) {
+              return (
+                <View key={String(e.id)} style={s.card}>
+                  <Text style={s.cardTitle}>Editing: {friendly(e)}</Text>
+                  <Text style={s.cardMeta}>id: {String(e.id)}</Text>
+                  <Text style={s.label}>Title</Text>
+                  <TextInput
+                    placeholder="Title"
+                    placeholderTextColor="#888"
+                    value={editTitle}
+                    onChangeText={setEditTitle}
+                    style={s.input}
+                  />
+                  <Text style={s.label}>Fee (credits, cents)</Text>
+                  <TextInput
+                    placeholder="e.g. 500"
+                    placeholderTextColor="#888"
+                    keyboardType="number-pad"
+                    value={editFeeCents}
+                    onChangeText={setEditFeeCents}
+                    style={s.input}
+                  />
+                  <View style={s.row}>
+                    <TouchableOpacity onPress={saveEdit} style={[s.btn, s.btnPrimary]} disabled={busy}>
+                      {busy ? <ActivityIndicator /> : <Text style={s.btnText}>Save</Text>}
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={cancelEdit} style={[s.btn, s.btnSecondary, { marginLeft: 8 }]} disabled={busy}>
+                      <Text style={s.btnText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            }
+            return (
+              <View key={String(e.id)} style={s.card}>
+                <Text style={s.cardTitle}>{friendly(e)}</Text>
+                <Text style={s.cardMeta}>id: {String(e.id)}</Text>
+                <Text style={s.cardMeta}>
+                  feeCents: {Number(e.feeCents ?? 0)} (${toDollars(e.feeCents ?? 0)})
+                </Text>
+                <View style={s.row}>
+                  <TouchableOpacity onPress={() => startEdit(e)} style={[s.btn, s.btnSecondary]}>
+                    <Text style={s.btnText}>Edit</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => removeEvent(e.id)} style={[s.btn, s.btnDanger, { marginLeft: 8 }]}>
+                    <Text style={s.btnText}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })}
+
+          {!eventsBusy && (
+            <TouchableOpacity onPress={loadEvents} style={[s.btn, s.btnSecondary, { marginTop: 10 }]}>
+              <Text style={s.btnText}>Refresh Events</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    </ScrollView>
   );
 }
 
 const s = StyleSheet.create({
-  h1: { color: WHITE, fontSize: 22, fontWeight: '800' },
-  sub: { color: MUTED, marginTop: 4, marginBottom: 14 },
-  card: { backgroundColor: CARD, borderColor: BORDER, borderWidth: 1, borderRadius: 14, padding: 14, marginTop: 12 },
-  cardTitle: { color: WHITE, fontWeight: '800', marginBottom: 8, fontSize: 16 },
-  btn: { backgroundColor: ORANGE, borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 8 },
-  btnDisabled: { opacity: 0.6 },
-  btnText: { color: '#000', fontWeight: '800' },
-  fieldLabel: { color: MUTED, marginBottom: 4, marginTop: 8 },
-  input: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, color: WHITE, backgroundColor: '#0c0c0c' },
-  eventItem: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: '#1b1b1b' },
-  eventItemActive: { backgroundColor: '#0c0c0c', borderRadius: 10, paddingHorizontal: 10, marginTop: 8 },
-  eventTitle: { color: WHITE, fontWeight: '700' },
-  eventMeta: { color: MUTED, fontSize: 12 },
-  row: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
-  pill: { borderWidth: 1, borderColor: '#2a2a2a', borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14, marginRight: 8, marginTop: 8 },
-  pillOn: { backgroundColor: '#0c0c0c', borderColor: '#3a3a3a' },
-  pillText: { color: '#9a9a9a', fontWeight: '700' },
-  pillTextOn: { color: '#fff' },
+  root: { flex: 1, backgroundColor: '#000' },
+  section: { padding: 16, borderBottomColor: '#1b1b1b', borderBottomWidth: 1 },
+  h1: { color: '#fff', fontSize: 18, fontWeight: '800', marginBottom: 12 },
+  label: { color: '#bbb', marginTop: 6, marginBottom: 6 },
+  input: {
+    backgroundColor: '#0f0f0f',
+    color: '#fff',
+    borderColor: '#1f1f1f',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  row: { flexDirection: 'row', alignItems: 'center' },
+  btn: { paddingVertical: 12, paddingHorizontal: 14, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  btnText: { color: '#fff', fontWeight: '800' },
+  btnPrimary: { backgroundColor: '#1e90ff' },
+  btnSecondary: { backgroundColor: '#2f2f2f' },
+  btnDanger: { backgroundColor: '#ff4d4f' },
+  balancePill: {
+    marginLeft: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#121212',
+    borderRadius: 10,
+    borderColor: '#1f1f1f',
+    borderWidth: 1,
+  },
+  balanceText: { color: '#fff', fontWeight: '800' },
+  balanceSub: { color: '#9a9a9a', fontSize: 12 },
+  subH: { color: '#ddd', fontWeight: '700', marginBottom: 6 },
+  historyItem: { color: '#aaa', fontSize: 12, marginBottom: 4 },
+  muted: { color: '#999' },
+  card: { backgroundColor: '#0e0e0e', borderColor: '#1f1f1f', borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 10 },
+  cardTitle: { color: '#fff', fontWeight: '800' },
+  cardMeta: { color: '#bbb', fontSize: 12, marginTop: 4 },
 });

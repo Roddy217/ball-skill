@@ -1,0 +1,9 @@
+SERVER IDEA (not active):
+- Replace getUserCredits with:
+  function getUserCredits(email) {
+    if (!credits.has(email)) credits.set(email, { demo:0, bonus:0, live:0 });
+    return credits.get(email);
+  }
+- Update /api/credits/:email to compute total.
+- Add /api/credits/:email/detail returning buckets.
+- Update /api/credits/grant to accept optional "bucket" field.

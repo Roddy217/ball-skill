@@ -23,7 +23,7 @@ import AdminScreen from "./screens/AdminScreen";
 
 // --- Admin allowlist (add/remove emails as needed) ---
 const ADMIN_EMAILS = new Set<string>([
-  "test@ballskill.com",
+  "test@ballskill.com", "admin@ballskill.com",
   // "admin@ballskill.com",
   // "you@yourdomain.com",
 ]);
