@@ -25,6 +25,7 @@
     "expo-linking": "~7.1.7",
     "expo-status-bar": "~2.2.3",
     "firebase": "^12.1.0",
+    "firebase-admin": "^13.5.0",
     "react": "19.0.0",
     "react-native": "0.79.5",
     "react-native-safe-area-context": "5.4.0",

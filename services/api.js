@@ -1,3 +1,5 @@
+import { auth } from './firebase';
+
 // services/api.js
 // Clean JS API client for Ball Skill (Expo). Keeps values in CREDITS (aka cents).
 
@@ -5,36 +7,35 @@ const BASE = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://192.168.1.244:3001')
 const API_BASE_URL = `${BASE}/api`;
 
 class ApiService {
+  constructor() {
+    this.baseUrl = API_BASE_URL;
+  }
+
   // ---------- low-level ----------
-  async makeRequest(endpoint, { method = 'GET', headers = {}, body } = {}) {
-    const url = `${API_BASE_URL}${endpoint}`;
-    const opts = {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        ...headers,
-      },
-    };
-    if (body != null) opts.body = body;
-
-    const res = await fetch(url, opts);
-    const text = await res.text();
-
-    let data = null;
+  async makeRequest(path, options = {}) {
+    const url = `${this.baseUrl}${path}`;
+    let token = null;
     try {
-      data = text ? JSON.parse(text) : null;
+      if (auth?.currentUser?.getIdToken) {
+        token = await auth.currentUser.getIdToken(); // cached token
+        if (!token) token = await auth.currentUser.getIdToken(true); // force refresh
+      }
     } catch {
-      data = { raw: text };
+      // ignore token errors; public routes might not need it
     }
-
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+    const res = await fetch(url, { ...options, headers });
+    const text = await res.text();
+    let body;
+    try { body = JSON.parse(text); } catch { body = { raw: text }; }
     if (!res.ok) {
-      console.warn('API error', { url, status: res.status, body: data });
-      const msg =
-        (data && (data.error || data.message || data.raw)) ||
-        `Request failed ${res.status}`;
-      throw new Error(msg);
+      throw { status: res.status, url, body };
     }
-    return data;
+    return body;
   }
 
   // ---------- helpers ----------
@@ -217,6 +218,14 @@ class ApiService {
   history(email) {
     const enc = encodeURIComponent(email);
     return this.makeRequest(`/credits/${enc}/history`);
+  }
+
+  // ---------- admin ----------
+  async searchUsers(prefix, limit = 8) {
+    const qs = new URLSearchParams({ prefix: String(prefix || ''), limit: String(limit) });
+    const res = await this.makeRequest(`/admin/userSearch?${qs.toString()}`);
+    if (Array.isArray(res)) return { emails: res };
+    return { emails: Array.isArray(res?.emails) ? res.emails : [] };
   }
 }
 

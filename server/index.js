@@ -4,6 +4,60 @@ import cors from 'cors';
 import Stripe from 'stripe';
 import crypto from 'node:crypto';
 
+/** ===== Firebase Admin bootstrap (for secure admin endpoints) ===== */
+import admin from 'firebase-admin';
+
+if (!admin.apps.length) {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    const json = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON, 'base64').toString('utf8'));
+    admin.initializeApp({ credential: admin.credential.cert(json) });
+    // After admin.initializeApp(...)
+    console.log('[admin:init]', { projectId: admin.app().options?.projectId });
+  } else {
+    // For local dev: set GOOGLE_APPLICATION_CREDENTIALS to the absolute path of serviceAccount.json
+    admin.initializeApp({ credential: admin.credential.applicationDefault() });
+  }
+}
+
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || 'admin@ballskill.com,test@ballskill.com')
+  .split(',')
+  .map(s => s.trim().toLowerCase())
+  .filter(Boolean);
+
+/** Auth middleware: verifies Firebase ID token and checks allowlist */
+async function requireAdmin(req, res, next) {
+  try {
+    const hdr = req.headers.authorization || '';
+    const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
+    if (!token) return res.status(401).json({ success: false, error: 'missing token' });
+    const decoded = await admin.auth().verifyIdToken(token);
+    const email = (decoded.email || '').toLowerCase();
+    if (!ADMIN_EMAILS.includes(email)) return res.status(403).json({ success: false, error: 'forbidden' });
+    req.user = { email };
+    return next();
+  } catch (e) {
+    return res.status(401).json({ success: false, error: 'invalid token' });
+  }
+}
+
+/** Helper: list users and filter emails by case-insensitive prefix */
+async function searchEmailsByPrefix(prefix, limit = 8) {
+  const q = String(prefix || '').toLowerCase();
+  const out = new Set();
+  let pageToken = undefined;
+  while (out.size < limit) {
+    const res = await admin.auth().listUsers(1000, pageToken);
+    for (const u of res.users) {
+      const e = (u.email || '').toLowerCase();
+      if (e && e.startsWith(q)) out.add(e);
+      if (out.size >= limit) break;
+    }
+    if (!res.pageToken || out.size >= limit) break;
+    pageToken = res.pageToken;
+  }
+  return Array.from(out).slice(0, limit);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -257,6 +311,32 @@ app.get('/api/credits/:email/history', (req, res) => {
     res.json({ success: true, history: rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** Admin: user email autocomplete */
+app.get('/api/admin/userSearch', requireAdmin, async (req, res) => {
+  try {
+    const { prefix = '', limit = '8' } = req.query;
+    const n = Math.min(parseInt(String(limit), 10) || 8, 25);
+    const emails = await searchEmailsByPrefix(prefix, n);
+    app.get('/api/admin/userSearch', requireAdmin, async (req, res) => {
+      try {
+        const { prefix = '', limit = '8' } = req.query;
+        const n = Math.min(parseInt(String(limit), 10) || 8, 25);
+        const emails = await searchEmailsByPrefix(prefix, n);
+    
+        // ⬇️ Add this line
+        console.log('[admin:userSearch]', { requester: req.user?.email, prefix, count: emails.length });
+    
+        return res.json({ success: true, emails });
+      } catch (e) {
+        return res.status(500).json({ success: false, error: e?.message || 'server error' });
+      }
+    });
+    res.json({ success: true, emails });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e?.message || 'server error' });
   }
 });
 
