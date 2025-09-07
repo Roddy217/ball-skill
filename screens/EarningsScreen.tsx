@@ -1,16 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
 import api from '../services/api';
 import { auth } from '../services/firebase';
 
-const ORANGE = '#FF6600';
-const CARD = '#111';
-const BORDER = '#2a2a2a';
-const WHITE = '#fff';
-const MUTED = '#9a9a9a';
+const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', WHITE = '#fff', MUTED = '#9a9a9a';
 
 export default function EarningsScreen() {
-  const email = auth.currentUser?.email || '';
+  const email = auth.currentUser?.email || 'test@ballskill.com';
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
@@ -21,7 +17,7 @@ export default function EarningsScreen() {
       const res = await api.getCredits(email);
       setBalance(res.balance ?? 0);
     } catch (e:any) {
-      // ignore for now
+      // ignore
     } finally {
       setLoading(false);
     }
@@ -30,29 +26,29 @@ export default function EarningsScreen() {
   useEffect(() => { load(); }, [email]);
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: '#000' }}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={WHITE} />}>
-      <View style={{ padding: 16 }}>
-        <Text style={s.h1}>Earnings</Text>
-        <View style={s.card}>
-          <Text style={s.label}>Current Balance</Text>
-          <Text style={s.balance}>
-            {balance === null ? '—' : `${balance} credits`}
-          </Text>
-          <TouchableOpacity style={[s.btn, { marginTop: 12 }]} onPress={load} disabled={loading}>
-            {loading ? <ActivityIndicator color="#000" /> : <Text style={s.btnText}>Refresh</Text>}
-          </TouchableOpacity>
-        </View>
+    <ScrollView style={{ flex:1, backgroundColor:'#000' }} contentContainerStyle={{ padding:16 }}>
+      <Text style={s.h1}>Earnings</Text>
+
+      <View style={s.card}>
+        <Text style={s.label}>Current Balance</Text>
+        {loading ? (
+          <ActivityIndicator color={ORANGE} />
+        ) : (
+          <Text style={s.balance}>{balance == null ? '--' : balance}</Text>
+        )}
+        <TouchableOpacity style={s.btn} onPress={load}>
+          <Text style={s.btnText}>Refresh</Text>
+        </TouchableOpacity>
       </View>
     </ScrollView>
   );
 }
 
 const s = StyleSheet.create({
-  h1: { color: WHITE, fontSize: 22, fontWeight: '800', marginBottom: 12 },
-  card: { backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 12, padding: 16 },
-  label: { color: MUTED, fontSize: 12 },
-  balance: { color: WHITE, fontSize: 28, fontWeight: '900', marginTop: 4 },
-  btn: { backgroundColor: ORANGE, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
-  btnText: { color: '#000', fontWeight: '700' },
+  h1:{ color:WHITE, fontSize:22, fontWeight:'800' },
+  card:{ backgroundColor:CARD, borderColor:BORDER, borderWidth:1, borderRadius:14, padding:14, marginTop:12 },
+  label:{ color:MUTED, marginBottom:6 },
+  balance:{ color:WHITE, fontSize:28, fontWeight:'900', marginBottom:10 },
+  btn:{ backgroundColor:ORANGE, borderRadius:12, paddingVertical:10, alignItems:'center' },
+  btnText:{ color:'#000', fontWeight:'800' },
 });

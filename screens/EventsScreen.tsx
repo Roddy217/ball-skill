@@ -1,180 +1,74 @@
-// screens/EventsScreen.tsx (Public Events)
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, ScrollView, RefreshControl } from 'react-native';
 import api, { toDollars } from '../services/api';
 import { auth } from '../services/firebase';
 
-type EventItem = { id: string; title?: string; name?: string; feeCents?: number };
+const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', WHITE = '#fff';
 
 export default function EventsScreen() {
-  const email = auth?.currentUser?.email || '';
-  const [events, setEvents] = useState<EventItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [joiningId, setJoiningId] = useState<string | null>(null);
-  const [joinedMap, setJoinedMap] = useState<Record<string, boolean>>({});
-  const [visibleCount, setVisibleCount] = useState(10); // client-side "Load more"
+  const email = auth.currentUser?.email || 'test@ballskill.com';
+  const [loading, setLoading] = useState(false);
+  const [events, setEvents] = useState<any[]>([]);
 
-  const friendly = (e: EventItem) => e.title ?? e.name ?? e.id;
-
-  const load = useCallback(async () => {
+  const load = async () => {
     setLoading(true);
     try {
-      const list = await api.getEvents();
-      setEvents(Array.isArray(list) ? list : []);
-      setVisibleCount(10);
-    } catch (e: any) {
-      Alert.alert('Events error', e?.message ?? String(e));
+      const res = await api.getEvents();
+      setEvents(res.events || []);
+    } catch (e:any) {
+      Alert.alert('Error', e.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
+  useEffect(() => { load(); }, []);
+
+  const onJoin = async (ev:any) => {
     try {
-      await load();
-      if (email) {
-        const acc: Record<string, boolean> = {};
-        for (const ev of events) {
-          try {
-            const r = await api.isJoined(ev.id, email);
-            acc[ev.id] = !!(r && r.joined);
-          } catch {}
-        }
-        setJoinedMap(acc);
-      }
-    } finally {
-      setRefreshing(false);
+      const fee = Number(ev.feeCents || 0) / 100; // dollars for message only
+      const cents = Number(ev.feeCents || 0);
+      const out = await api.joinEventDemo(ev.id, email, Math.max(0, cents));
+      Alert.alert('Joined', `Paid $${toDollars(out.fee)} credits. New balance: ${out.balance}`);
+    } catch (e:any) {
+      Alert.alert('Join failed', e.message);
     }
-  }, [load, email, events]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      if (!email || !events.length) {
-        setJoinedMap({});
-        return;
-      }
-      const acc: Record<string, boolean> = {};
-      for (const ev of events) {
-        try {
-          const r = await api.isJoined(ev.id, email);
-          if (cancelled) return;
-          acc[ev.id] = !!(r && r.joined);
-        } catch {
-          // ignore
-        }
-      }
-      if (!cancelled) setJoinedMap(acc);
-    }
-    check();
-    return () => { cancelled = true; };
-  }, [email, events]);
-
-  const onJoin = useCallback(async (eventId: string) => {
-    const who = (auth?.currentUser?.email || '').trim();
-    if (!who) {
-      Alert.alert('Sign in required', 'Please sign in to join events.');
-      return;
-    }
-    setJoiningId(eventId);
-    try {
-      const res = await api.joinAndCharge(eventId, who); // charges feeCents (credits)
-      Alert.alert('Joined', `Success! Charged ${res.charged} credits.`);
-      setJoinedMap((m) => ({ ...m, [eventId]: true }));
-    } catch (e: any) {
-      Alert.alert('Join failed', e?.message ?? String(e));
-    } finally {
-      setJoiningId(null);
-    }
-  }, []);
-
-  const canLoadMore = useMemo(() => visibleCount < events.length, [visibleCount, events.length]);
-  const visible = useMemo(() => events.slice(0, visibleCount), [events, visibleCount]);
-
-  if (loading) {
-    return (
-      <View style={s.center}>
-        <ActivityIndicator />
-        <Text style={s.muted}>Loading events…</Text>
-      </View>
-    );
-  }
+  };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#000' }}>
-      {/* small debug header */}
-      <View style={s.debugBar}>
-        <Text style={s.debugText}>events: {events.length}</Text>
-        {!!events.length && (
-          <Text style={s.debugTextSmall}>
-            first: {friendly(events[0])} (fee {events[0].feeCents ?? 0} / ${toDollars(events[0].feeCents ?? 0)})
-          </Text>
+    <ScrollView style={{ flex:1, backgroundColor:'#000' }}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={WHITE} />}>
+      <View style={{ padding:16 }}>
+        <Text style={s.h1}>Events</Text>
+        {loading && events.length === 0 ? (
+          <ActivityIndicator color={ORANGE} style={{ marginTop:16 }} />
+        ) : (
+          <View style={s.card}>
+            {events.length === 0 && <Text style={s.meta}>No events yet.</Text>}
+            {events.map(ev => (
+              <View key={ev.id} style={s.item}>
+                <Text style={s.title}>{ev.name}</Text>
+                <Text style={s.meta}>
+                  {new Date(ev.dateISO).toLocaleString()} • Fee ${toDollars(ev.feeCents)} • {ev.locationType === 'in_person' ? 'In-Person' : 'Online'}
+                </Text>
+                <TouchableOpacity style={s.btn} onPress={() => onJoin(ev)}>
+                  <Text style={s.btnText}>Join Event</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
         )}
       </View>
-
-      <ScrollView
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        contentContainerStyle={{ padding: 16 }}
-      >
-        {visible.map((e) => {
-          const joined = !!joinedMap[e.id];
-          const busy = joiningId === e.id;
-          return (
-            <View key={String(e.id)} style={s.card}>
-              <Text style={s.title} numberOfLines={1}>{friendly(e)}</Text>
-              <Text style={s.meta}>id: {String(e.id)}</Text>
-              <Text style={s.meta}>feeCents: {Number(e.feeCents ?? 0)} (${toDollars(e.feeCents ?? 0)})</Text>
-
-              <TouchableOpacity
-                accessibilityRole="button"
-                onPress={() => onJoin(e.id)}
-                disabled={joined || busy}
-                style={[s.btn, (joined || busy) && { opacity: 0.6 }]}
-              >
-                {busy ? (
-                  <ActivityIndicator color="#000" />
-                ) : (
-                  <Text style={s.btnText}>{joined ? 'Already joined' : 'Join'}</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          );
-        })}
-
-        {canLoadMore && (
-          <TouchableOpacity onPress={() => setVisibleCount((n) => n + 10)} style={[s.btn, s.btnSecondary, { marginTop: 12 }]}>
-            <Text style={s.btnText}>Load more</Text>
-          </TouchableOpacity>
-        )}
-
-        {!events.length && (
-          <Text style={[s.meta, { marginTop: 12 }]}>No events available.</Text>
-        )}
-      </ScrollView>
-    </View>
+    </ScrollView>
   );
 }
 
-const BORDER = '#1f1f1f';
-const CARD = '#0f0f0f';
-const ORANGE = '#ff9d00';
-
 const s = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' },
-  muted: { color: '#9a9a9a' },
-  debugBar: { padding: 10, borderBottomColor: BORDER, borderBottomWidth: 1, backgroundColor: '#0b0b0b' },
-  debugText: { color: '#9ad', fontSize: 12, fontWeight: '700' },
-  debugTextSmall: { color: '#789', fontSize: 11 },
-  card: { backgroundColor: CARD, borderColor: BORDER, borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 12 },
-  title: { color: '#fff', fontWeight: '800', fontSize: 16 },
-  meta: { color: '#bbb', fontSize: 12, marginTop: 4 },
-  btn: { backgroundColor: ORANGE, borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
-  btnSecondary: { backgroundColor: '#2f2f2f' },
-  btnText: { color: '#000', fontWeight: '800' },
+  h1:{ color:WHITE, fontSize:22, fontWeight:'800' },
+  card:{ backgroundColor:CARD, borderColor:BORDER, borderWidth:1, borderRadius:14, padding:14, marginTop:12 },
+  item:{ paddingVertical:8, borderTopWidth:1, borderTopColor:'#1b1b1b' },
+  title:{ color:WHITE, fontWeight:'800' },
+  meta:{ color:MUTED, fontSize:12, marginTop:2 },
+  btn:{ backgroundColor:ORANGE, borderRadius:12, paddingVertical:10, alignItems:'center', marginTop:10 },
+  btnText:{ color:'#000', fontWeight:'800' },
 });
