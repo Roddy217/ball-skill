@@ -1,21 +1,43 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import {
+  initializeAuth,
+  getReactNativePersistence,
+  getAuth as getAuthRaw,
+  Auth,
+} from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDIRR9apJ4btQMvGytLkplGOTbFJOySkPU",
-  authDomain: "ballskill-app.firebaseapp.com",
-  projectId: "ballskill-app",
-  storageBucket: "ballskill-app.firebasestorage.app",
-  messagingSenderId: "1007534039189",
-  appId: "1:1007534039189:ios:67f0794415c945f0d1bb9c",
+const config = {
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
-const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+let authInstance: Auth | null = null;
 
-// Persist auth in React Native
-const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage),
-});
+export function initFirebase() {
+  const app = getApps().length ? getApps()[0]! : initializeApp(config as any);
+  if (!authInstance) {
+    try {
+      // First/only initialization with RN persistence
+      authInstance = initializeAuth(app, {
+        persistence: getReactNativePersistence(AsyncStorage),
+      });
+    } catch {
+      // If something else already initialized auth, fall back to the existing instance
+      authInstance = getAuthRaw(app);
+    }
+  }
+  return app;
+}
 
-export { app, auth };
+export function getAuthInstance(): Auth {
+  if (!authInstance) {
+    initFirebase();
+  }
+  // non-null by here
+  return authInstance!;
+}
