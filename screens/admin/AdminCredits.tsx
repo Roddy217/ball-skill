@@ -197,24 +197,26 @@ export default function AdminCredits() {
             </View>
           </View>
 
-          {/* History controls */}
+          {/* History controls: chips row */}
           <View style={s.controls}>
             <View style={s.controlsLeft}>
-              <Chip label="Newest" active={sort==='NEWEST'} onPress={()=>setSort('NEWEST')} />
-              <Chip label="Oldest" active={sort==='OLDEST'} onPress={()=>setSort('OLDEST')} />
-              <Chip label="Credits" active={sort==='POS'} onPress={()=>setSort('POS')} />
-              <Chip label="Debits"  active={sort==='NEG'} onPress={()=>setSort('NEG')} />
+              <ChipSmall label="Newest" active={sort==='NEWEST'} onPress={()=>setSort('NEWEST')} />
+              <ChipSmall label="Oldest" active={sort==='OLDEST'} onPress={()=>setSort('OLDEST')} />
+              <ChipSmall label="Credits" active={sort==='POS'} onPress={()=>setSort('POS')} />
+              <ChipSmall label="Debits"  active={sort==='NEG'} onPress={()=>setSort('NEG')} />
             </View>
-            <TextInput
-              value={q}
-              onChangeText={setQ}
-              placeholder="filter notes"
-              placeholderTextColor={colors.MUTED_TEXT}
-              returnKeyType="search"
-              onSubmitEditing={refreshHistory}
-              style={[s.input, { width: 160, paddingVertical: 6 }]}
-            />
           </View>
+
+          {/* Tiny filter moved to its own full-width row */}
+          <TextInput
+            value={q}
+            onChangeText={setQ}
+            placeholder="filter history notes"
+            placeholderTextColor={colors.MUTED_TEXT}
+            returnKeyType="search"
+            onSubmitEditing={refreshHistory}
+            style={[s.input, { paddingVertical: 6, marginTop: 6 }]}
+          />
 
           {/* History panel */}
           <View style={s.historyBox}>
@@ -238,6 +240,21 @@ export default function AdminCredits() {
     </KeyboardAvoidingView>
   );
 }
+
+function ChipSmall({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [cs2.chip, active && cs2.active, pressed && { opacity: 0.9 }]}>
+      <Text style={[cs2.txt, active && cs2.txtActive]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const cs2 = StyleSheet.create({
+  chip: { backgroundColor: '#1b1b1e', borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10, marginRight: 8 },
+  active: { backgroundColor: colors.ORANGE, borderColor: colors.ORANGE },
+  txt: { color: colors.TEXT, fontSize: 11, fontWeight: '700' },
+  txtActive: { color: colors.WHITE },
+});
 
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
@@ -303,8 +320,7 @@ const s = StyleSheet.create({
   historyBox: {
     marginTop: 8,
     backgroundColor: colors.SURFACE,
-    borderColor: colors.BORDER,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 12,
     maxHeight: 300,
     minHeight: 160,

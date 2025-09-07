@@ -1,380 +1,222 @@
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator, Alert } from 'react-native';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
-import { getRegistrationStatus, joinEventWithCredits, loadApiBase, getApiBase, getBalance } from '../services/api';
-import { useFocusEffect } from '@react-navigation/native';
+import { getEvents, refreshEvents, getRegistrationStatus, joinEventWithCredits, loadApiBase } from '../services/api';
+import MultiProgress from '../components/MultiProgress';
+import { useAuth } from '../providers/AuthProvider';
+import { addNotification } from '../state/notify';
 
-type EventItem = {
+type SortFilter = 'ALL' | 'SOONEST' | 'NEWEST' | 'IN_PERSON' | 'ONLINE';
+type PriceSort = 'NONE' | 'PRICE_ASC' | 'PRICE_DESC';
+
+type EventRow = {
   id: string;
-  title: string;
-  date: string;
-  startTs: number;
-  locationType: 'in_person' | 'online';
-  venue?: string;
-  fee: number;
-  spotsLeft: number;
-  drills?: string[];
+  name: string;
+  dateISO: string;
+  locationType: 'in_person'|'online';
+  feeCents: number;
+  drillsEnabled?: string[];
+  capacity?: number;
+  prizePoolCents?: number;
+  potentialPayoutCents?: number;
+  playerTypeMix?: Record<string, number>;
+  joinedCount?: number;
 };
 
-type SortFilter =
-  | 'ALL'
-  | 'SOONEST'
-  | 'NEWEST'
-  | 'IN_PERSON'
-  | 'ONLINE'
-  | 'PRICE_ASC'
-  | 'PRICE_DESC';
-
-const baseSeed: EventItem[] = [
-  { id: 'evt_001', title: 'Ball Skill Combine', date: 'Sat, Sep 20 • 10:00 AM', startTs: new Date('2025-09-20T10:00:00-04:00').getTime(), locationType: 'in_person', venue: 'Hoop City Gym', fee: 10, spotsLeft: 8, drills: ['3PT','Midrange','Handles'] },
-  { id: 'evt_002', title: 'Virtual Shooting Clinic', date: 'Sun, Sep 21 • 6:00 PM', startTs: new Date('2025-09-21T18:00:00-04:00').getTime(), locationType: 'online', fee: 10, spotsLeft: 20, drills: ['Form','Release'] },
-  { id: 'evt_003', title: 'Guard Skills Lab', date: 'Tue, Sep 23 • 7:30 PM', startTs: new Date('2025-09-23T19:30:00-04:00').getTime(), locationType: 'in_person', venue: 'Downtown Rec Center', fee: 10, spotsLeft: 3, drills: ['Handles','Finishing','Footwork'] },
-];
-
-function generateEvent(idx: number): EventItem {
-  const isOnline = idx % 2 === 0;
-  const dt = new Date();
-  dt.setDate(dt.getDate() + idx);
-  dt.setHours(18, 0, 0, 0);
-  const startTs = dt.getTime();
-  const display = dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  return {
-    id: `evt_${String(idx).padStart(3, '0')}`,
-    title: isOnline ? 'Virtual Skills Session' : 'Open Gym Skills Night',
-    date: `${display} • ${isOnline ? '6:00 PM' : '7:00 PM'}`,
-    startTs,
-    locationType: isOnline ? 'online' : 'in_person',
-    venue: isOnline ? undefined : 'City Rec Center',
-    fee: 10,
-    spotsLeft: Math.max(1, 20 - (idx % 7)),
-    drills: isOnline ? ['Form','Release'] : ['Handles','Footwork'],
-  };
-}
+const PLAYER_COLORS: Record<string, string> = {
+  youth: '#3DDC84', teens: '#4db6ff', adult: '#ffcc00', pro: '#ff6b6b', elite: '#b388ff',
+  celebrity: '#ff8a65', aau: '#00e5ff', d1: '#ffab40', d2: '#7e57c2', rec: '#9ccc65',
+  beginner: '#8dffb0', amateur: '#ffd180', open: '#333',
+};
 
 export default function EventsScreen() {
-  const [filter, setFilter] = useState<SortFilter>('SOONEST');
-  const [apiBase, setApiBaseState] = useState<string>('');
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [filter, setFilter] = useState<SortFilter>('ALL');
+  const [priceSort, setPriceSort] = useState<PriceSort>('NONE');
+  const [q, setQ] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const { user } = useAuth();
+  const emailLc = (user?.email || '').toLowerCase();
 
-  // TODO(auth): replace with real user email
-  const userEmail = 'demo@ballskill.app';
+  useEffect(() => { loadApiBase(); }, []);
+  const load = useCallback(async () => { const list = await getEvents(); setEvents(list as any); }, []);
+  useEffect(() => { load(); }, [load]);
 
-  const [pool, setPool] = useState<EventItem[]>(() => {
-    const first: EventItem[] = [...baseSeed];
-    for (let i = 4; i <= 20; i++) first.push(generateEvent(i));
-    return first;
-  });
-
-  const PAGE_SIZE = 10;
-  const [page, setPage] = useState<number>(1);
-  const [loadingMore, setLoadingMore] = useState<boolean>(false);
-
-  const [joinedMap, setJoinedMap] = useState<Record<string, boolean>>({});
-  const [joiningMap, setJoiningMap] = useState<Record<string, boolean>>({});
-
-  const ensurePoolSize = useCallback((targetSize: number) => {
-    if (pool.length >= targetSize) return;
-    const next: EventItem[] = [...pool];
-    for (let i = pool.length + 1; i <= targetSize; i++) next.push(generateEvent(i));
-    setPool(next);
-  }, [pool]);
-
-  const { visibleRows, totalAfterFilter } = useMemo(() => {
-    let rows = [...pool];
-    if (filter === 'IN_PERSON') rows = rows.filter(r => r.locationType === 'in_person');
-    if (filter === 'ONLINE')    rows = rows.filter(r => r.locationType === 'online');
-    if (filter === 'SOONEST')   rows.sort((a, b) => a.startTs - b.startTs);
-    if (filter === 'NEWEST')    rows.sort((a, b) => b.startTs - a.startTs);
-    if (filter === 'PRICE_ASC') rows.sort((a, b) => a.fee - b.fee);
-    if (filter === 'PRICE_DESC')rows.sort((a, b) => b.fee - a.fee);
-    const total = rows.length;
-    const end = Math.min(page * PAGE_SIZE, total);
-    return { visibleRows: rows.slice(0, end), totalAfterFilter: total };
-  }, [pool, filter, page]);
-
-  const hasMore = visibleRows.length < totalAfterFilter;
-
-  const onSelectFilter = (f: SortFilter) => { setFilter(f); setPage(1); };
-
-  const loadMore = () => {
-    if (loadingMore || !hasMore) return;
-    setLoadingMore(true);
-    setTimeout(() => {
-      ensurePoolSize((page + 1) * PAGE_SIZE + 5);
-      setPage(p => p + 1);
-      setLoadingMore(false);
-    }, 350);
-  };
-
-  // Load saved API base on mount
-  useEffect(() => {
-    (async () => {
-      await loadApiBase();
-      setApiBaseState(getApiBase());
-    })();
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { const list = await refreshEvents(); setEvents(list as any); }
+    finally { setRefreshing(false); }
   }, []);
 
-  // Also refresh API base whenever this screen gains focus (after Admin Save)
-  useFocusEffect(
-    useCallback(() => {
-      (async () => {
-        await loadApiBase();
-        setApiBaseState(getApiBase());
-        // Clear and refetch “joined” flags when API base changes
-        setJoinedMap({});
-      })();
-    }, [])
-  );
+  const filtered = useMemo(() => {
+    const lc = q.trim().toLowerCase();
+    let rows = (events || []).filter(e => {
+      if (!lc) return true;
+      const hay = [(e.name||''), (e.locationType||''), ...(e.drillsEnabled||[])].join(' ').toLowerCase();
+      return hay.includes(lc);
+    });
+    if (filter === 'IN_PERSON') rows = rows.filter(e => e.locationType === 'in_person');
+    if (filter === 'ONLINE') rows = rows.filter(e => e.locationType === 'online');
+    if (filter === 'NEWEST') rows.sort((a, b) => new Date(b.dateISO).getTime() - new Date(a.dateISO).getTime());
+    else if (filter === 'SOONEST') rows.sort((a, b) => new Date(a.dateISO).getTime() - new Date(b.dateISO).getTime());
+    if (priceSort === 'PRICE_ASC') rows.sort((a, b) => (a.feeCents||0) - (b.feeCents||0));
+    else if (priceSort === 'PRICE_DESC') rows.sort((a, b) => (b.feeCents||0) - (a.feeCents||0));
+    return rows;
+  }, [events, filter, priceSort, q]);
 
-  // Prefetch registration status for visible items
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      for (const evt of visibleRows) {
-        if (joinedMap[evt.id] !== undefined) continue;
-        try {
-          const joined = await getRegistrationStatus(evt.id, userEmail);
-          if (!cancelled) setJoinedMap(prev => ({ ...prev, [evt.id]: joined }));
-        } catch {}
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [visibleRows, userEmail, joinedMap]);
+  const [joiningId, setJoiningId] = useState<string | null>(null);
+  const [joinedCache, setJoinedCache] = useState<Record<string, boolean>>({});
 
-  const onJoin = async (evt: EventItem) => {
-    if (joiningMap[evt.id]) return;
-
-    // If already joined, surface the info (no extra charge)
-    if (joinedMap[evt.id]) {
-      Alert.alert('Already joined', 'You are already registered for this event.');
-      return;
-    }
-
-    setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
+  const onJoin = async (ev: EventRow) => {
+    if (!emailLc) return Alert.alert('Sign in required', 'Please sign in to join an event.');
     try {
-      const res = await joinEventWithCredits(evt.id, userEmail, evt.fee);
-      if (res.success) {
-        setJoinedMap(prev => ({ ...prev, [evt.id]: true }));
-        // Show balance after join (or after noticing we were already joined)
-        const bal = await getBalance(userEmail);
-        if (res.already) {
-          Alert.alert('Already joined', `No additional charge.\nCurrent balance: ${bal ?? '—'}`);
-        } else {
-          Alert.alert('Joined', `Fee: ${res.fee ?? evt.fee}\nNew balance: ${bal ?? '—'}`);
-        }
-      } else {
-        Alert.alert('Join failed', res.error || res.message || 'Unknown error');
+      setJoiningId(ev.id);
+      const already = joinedCache[ev.id] ?? await getRegistrationStatus(ev.id, emailLc);
+      if (already) { setJoinedCache(p => ({...p,[ev.id]:true})); Alert.alert('Already joined', 'You’re in this event.'); return; }
+      const fee = Math.round((ev.feeCents || 0) / 100);
+      const res = await joinEventWithCredits(ev.id, emailLc, fee);
+      if (!res.success) {
+        if (res.error === 'insufficient_credits') Alert.alert('Insufficient credits', 'Add more credits to join this event.');
+        else if (res.error === 'event_full') Alert.alert('Event full', 'No spots remaining.');
+        else Alert.alert('Join failed', 'Please try again.');
+        return;
       }
-    } catch (e: any) {
-      Alert.alert('Join failed', e?.message || 'Unknown error');
-    } finally {
-      setJoiningMap(prev => ({ ...prev, [evt.id]: false }));
-    }
+      setJoinedCache(p => ({...p,[ev.id]:true}));
+      Alert.alert('Joined!', `-${fee} credits applied.\nNew balance: ${res.balance}`);
+      setEvents(prev => prev.map(e => e.id === ev.id ? ({ ...e, joinedCount: (e.joinedCount||0) + 1, playerTypeMix: res.playerTypeMix || e.playerTypeMix }) : e));
+      // Notify
+      addNotification({ title: 'Joined event', body: ev.name });
+    } finally { setJoiningId(null); }
   };
 
-  // Chips header with API base badge
-  const ChipsHeader = (
-    <View style={s.chipsSticky}>
-      <View style={s.chipsRowTop}>
-        <Text style={s.apiBadge} numberOfLines={1}>API: {apiBase ? apiBase.replace(/^https?:\/\//,'') : '—'}</Text>
+  const renderItem = ({ item }: { item: EventRow }) => {
+    const date = new Date(item.dateISO);
+    const fee = (item.feeCents || 0) / 100;
+    const joined = joinedCache[item.id] === true;
+    const capacity = item.capacity ?? 10;
+    const filled = Math.min(capacity, item.joinedCount ?? 0);
+    const remaining = Math.max(0, capacity - filled);
+
+    const segments = Object.entries(item.playerTypeMix || {}).map(([key, pct]) => ({
+      key, pct: Math.max(0, Number(pct) || 0), color: PLAYER_COLORS[key.toLowerCase()] || '#888'
+    }));
+    const usedPct = segments.reduce((s, x) => s + x.pct, 0);
+    if (usedPct < 1) segments.push({ key: 'open', pct: Math.max(0, 1 - usedPct), color: PLAYER_COLORS.open });
+
+    const timeLeft = getTimeLeft(date);
+    const isOnline = item.locationType === 'online';
+
+    return (
+      <View style={s.card}>
+        <View style={{ flex: 1, paddingRight: 10 }}>
+          <Text style={s.title}>{item.name}</Text>
+          <View style={s.row}><Ionicons name="calendar" size={14} color={colors.MUTED_TEXT} /><Text style={s.meta}>{date.toLocaleString()}</Text></View>
+          <View style={s.row}><Ionicons name={isOnline ? 'wifi' : 'location'} size={14} color={colors.MUTED_TEXT} /><Text style={s.meta}>{isOnline ? 'Online' : 'In person'}</Text></View>
+          <View style={[s.row, { marginTop: 2 }]}><Ionicons name="time" size={14} color={colors.MUTED_TEXT} /><Text style={s.meta}>{timeLeft}</Text></View>
+          {(item.prizePoolCents || 0) > 0 && (<View style={s.row}><Ionicons name="trophy" size={14} color={colors.MUTED_TEXT} /><Text style={s.meta}>Prize pool: ${((item.prizePoolCents||0)/100).toLocaleString()}</Text></View>)}
+          {(item.potentialPayoutCents || 0) > 0 && (<View style={s.row}><Ionicons name="cash-outline" size={14} color={colors.MUTED_TEXT} /><Text style={s.meta}>Potential payout: ${((item.potentialPayoutCents||0)/100).toLocaleString()}</Text></View>)}
+          {Array.isArray(item.drillsEnabled) && item.drillsEnabled.length > 0 && (<View style={s.chipsWrap}>{item.drillsEnabled.map(d => <Chip key={d} label={d} />)}</View>)}
+          {item.playerTypeMix && Object.keys(item.playerTypeMix).length > 0 && (<View style={s.chipsWrap}>{Object.keys(item.playerTypeMix).map(k => <Chip key={k} label={prettyType(k)} color={PLAYER_COLORS[k.toLowerCase()] || undefined} />)}</View>)}
+          <Text style={s.subText}>{filled}/{capacity} joined • {remaining} spots left</Text>
+          <MultiProgress segments={segments} height={8} radius={6} bg="#1a1a1a" />
+        </View>
+        <View style={{ width: 120, alignItems: 'flex-end', justifyContent: 'space-between' }}>
+          <Text style={s.price}>${fee.toFixed(2)}</Text>
+          <Pressable onPress={() => joined ? Alert.alert('Already joined', 'You’re in this event.') : onJoin(item)} disabled={joiningId === item.id}
+            style={({ pressed }) => [s.joinBtn, joined && s.joinBtnJoined, pressed && { opacity: 0.9 }]} >
+            <Ionicons name={joined ? 'checkmark-circle' : 'log-in-outline'} size={16} color={colors.WHITE} />
+            <Text style={s.joinText}>{joined ? 'Joined' : 'Join'}</Text>
+          </Pressable>
+        </View>
       </View>
-      <View style={s.chipsGroup}>
-        <Chip label="All"        active={filter==='ALL'}        onPress={() => onSelectFilter('ALL')} />
-        <Chip label="Soonest"    active={filter==='SOONEST'}    onPress={() => onSelectFilter('SOONEST')} />
-        <Chip label="Newest"     active={filter==='NEWEST'}     onPress={() => onSelectFilter('NEWEST')} />
-        <Chip label="In-Person"  active={filter==='IN_PERSON'}  onPress={() => onSelectFilter('IN_PERSON')} />
-        <Chip label="Online"     active={filter==='ONLINE'}     onPress={() => onSelectFilter('ONLINE')} />
-        <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
-        <Chip label="Price ↓"    active={filter==='PRICE_DESC'} onPress={() => onSelectFilter('PRICE_DESC')} />
-      </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={s.container}>
+      <Text style={s.h1}>Events</Text>
+
+      {/* Row 1: primary chips */}
+      <View style={s.rowWrap}>
+        <Chip label="All" active={filter==='ALL'} onPress={()=>setFilter('ALL')} />
+        <Chip label="Soonest" active={filter==='SOONEST'} onPress={()=>setFilter('SOONEST')} />
+        <Chip label="Newest"  active={filter==='NEWEST'}  onPress={()=>setFilter('NEWEST')} />
+        <Chip label="In-person" active={filter==='IN_PERSON'} onPress={()=>setFilter('IN_PERSON')} />
+        <Chip label="Online"    active={filter==='ONLINE'}    onPress={()=>setFilter('ONLINE')} />
+      </View>
+
+      {/* Row 2: price chips + Refresh pill */}
+      <View style={s.controlsRow}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Chip label="Price ↑" active={priceSort==='PRICE_ASC'}  onPress={()=>setPriceSort('PRICE_ASC')} />
+          <Chip label="Price ↓" active={priceSort==='PRICE_DESC'} onPress={()=>setPriceSort('PRICE_DESC')} />
+          {priceSort !== 'NONE' && (
+            <Pressable onPress={()=>setPriceSort('NONE')} style={({pressed})=>[s.clearBtn, pressed && {opacity:0.8}]}>
+              <Text style={s.clearTxt}>Clear</Text>
+            </Pressable>
+          )}
+        </View>
+        <Pressable onPress={onRefresh} style={({ pressed }) => [s.refreshPill, pressed && { opacity: 0.85 }]}>
+          <Ionicons name="refresh" size={16} color={colors.WHITE} />
+          <Text style={s.refreshTxt}>Refresh</Text>
+        </Pressable>
+      </View>
+
+      {/* Row 3: filter alone */}
+      <TextInput value={q} onChangeText={setQ} placeholder="type to filter events" placeholderTextColor={colors.MUTED_TEXT} style={s.filterBox} returnKeyType="search" />
+
       <FlatList
-        data={visibleRows}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={s.listContent}
-        ItemSeparatorComponent={() => <View style={s.sep} />}
-        renderItem={({ item }) => (
-          <EventCard
-            item={item}
-            joined={!!joinedMap[item.id]}
-            joining={!!joiningMap[item.id]}
-            onJoin={() => onJoin(item)}
-          />
-        )}
-        ListHeaderComponent={ChipsHeader}
-        stickyHeaderIndices={[0]}
-        ListHeaderComponentStyle={s.chipsSticky}
-        onEndReached={loadMore}
-        onEndReachedThreshold={0.5}
-        ListFooterComponent={
-          loadingMore
-            ? <View style={s.footerLoading}><ActivityIndicator /></View>
-            : !hasMore
-              ? <View style={s.footerEnd}><Text style={s.endText}>You’re all caught up</Text></View>
-              : null
-        }
+        data={filtered}
+        keyExtractor={(it) => it.id}
+        renderItem={renderItem}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
       />
     </View>
   );
 }
 
-function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
+function prettyType(k: string) { const m = k.toLowerCase(); if (m==='d1') return 'D1'; if (m==='d2') return 'D2'; return m.charAt(0).toUpperCase()+m.slice(1); }
+function getTimeLeft(date: Date) {
+  const ms = date.getTime() - Date.now();
+  if (ms <= 0) return 'Started';
+  const mins = Math.floor(ms/60000), days = Math.floor(mins/(60*24)), hours = Math.floor((mins - days*60*24)/60), m = mins % 60;
+  if (days > 0) return `Starts in ${days}d ${hours}h`; if (hours > 0) return `Starts in ${hours}h ${m}m`; return `Starts in ${m}m`;
+}
+function Chip({ label, active, onPress, color }: { label: string; active?: boolean; onPress?: () => void; color?: string }) {
+  const style = [cs.chip, active && cs.active, color ? { backgroundColor: color, borderColor: color } : null];
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [ s.chip, active && s.chipActive, pressed && { opacity: 0.9 } ]}
-      hitSlop={8}
-    >
-      <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
+    <Pressable onPress={onPress} disabled={!onPress} style={({ pressed }) => [style, onPress && pressed && { opacity: 0.9 }]}>
+      <Text style={[cs.txt, (active || color) && cs.txtActive]}>{label}</Text>
     </Pressable>
   );
 }
-
-function EventCard({ item, joined, joining, onJoin }: {
-  item: EventItem; joined: boolean; joining: boolean; onJoin: () => void;
-}) {
-  return (
-    <View style={s.card}>
-      <View style={s.rowBetween}>
-        <Text style={s.title} numberOfLines={1}>{item.title}</Text>
-        <View style={s.priceBadge}><Text style={s.priceText}>${item.fee}</Text></View>
-      </View>
-
-      <View style={s.metaRow}>
-        <Ionicons name="time-outline" size={16} color={colors.MUTED_TEXT} style={s.metaIcon} />
-        <Text style={s.metaText}>{item.date}</Text>
-      </View>
-      <View style={s.metaRow}>
-        <Ionicons name={item.locationType === 'online' ? 'wifi-outline' : 'location-outline'} size={16} color={colors.MUTED_TEXT} style={s.metaIcon} />
-        <Text style={s.metaText}>{item.locationType === 'online' ? 'Online' : item.venue ?? 'In person'}</Text>
-      </View>
-
-      {item.drills?.length ? (
-        <View style={s.drillChipsRow}>
-          {item.drills.map(d => <View key={d} style={s.drillChip}><Text style={s.drillChipText}>{d}</Text></View>)}
-        </View>
-      ) : null}
-
-      <View style={s.footerRow}>
-        <Text style={s.spotsText}>{item.spotsLeft} spot{item.spotsLeft === 1 ? '' : 's'} left</Text>
-        <Pressable
-          onPress={onJoin}
-          disabled={joining} // NOTE: only disable while joining (allow taps when already joined)
-          style={({ pressed }) => [
-            s.ctaBtn,
-            (joined || joining) && s.ctaBtnDisabled,
-            pressed && !joining && { opacity: 0.9 },
-          ]}
-        >
-          {joining ? (
-            <ActivityIndicator color={colors.WHITE} />
-          ) : joined ? (
-            <>
-              <Ionicons name="checkmark-circle" size={18} color={colors.WHITE} />
-              <Text style={s.ctaText}>Joined</Text>
-            </>
-          ) : (
-            <>
-              <Text style={s.ctaText}>Join Event</Text>
-              <Ionicons name="chevron-forward" size={18} color={colors.WHITE} />
-            </>
-          )}
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
+const cs = StyleSheet.create({
+  chip: { backgroundColor: '#1b1b1e', borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12, marginRight: 8, marginBottom: 6 },
+  active: { backgroundColor: colors.ORANGE, borderColor: colors.ORANGE },
+  txt: { color: colors.TEXT, fontSize: 12, fontWeight: '700' },
+  txtActive: { color: colors.WHITE },
+});
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.CANVAS },
-  listContent: { paddingHorizontal: 16, paddingBottom: 24 },
-
-  chipsSticky: { backgroundColor: colors.CANVAS },
-  chipsRowTop: { paddingHorizontal: 16, paddingTop: 8 },
-  apiBadge: { maxWidth: '100%', color: colors.MUTED_TEXT, fontSize: 11 },
-  chipsGroup: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 10,
-  },
-  chip: {
-    backgroundColor: '#1b1b1e',
-    borderColor: colors.BORDER,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  chipActive: { backgroundColor: colors.ORANGE, borderColor: colors.ORANGE },
-  chipText: { color: colors.TEXT, fontSize: 12, fontWeight: '700' },
-  chipTextActive: { color: colors.WHITE },
-
-  sep: { height: 12 },
-
-  card: {
-    backgroundColor: colors.SURFACE,
-    borderColor: colors.BORDER,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    padding: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
-  },
-  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  title: { color: colors.TEXT, fontSize: 18, fontWeight: '800', flex: 1, paddingRight: 8 },
-  priceBadge: {
-    backgroundColor: '#1f1f22',
-    borderColor: colors.BORDER,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    minWidth: 58,
-    alignItems: 'center',
-  },
-  priceText: { color: colors.TEXT, fontWeight: '800' },
-
-  metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-  metaIcon: { marginRight: 6, marginTop: 1 },
-  metaText: { color: colors.MUTED_TEXT, fontSize: 13 },
-
-  drillChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
-  drillChip: {
-    backgroundColor: '#1b1b1e',
-    borderColor: colors.BORDER,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-  },
-  drillChipText: { color: colors.TEXT, fontSize: 12, fontWeight: '700' },
-
-  footerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  spotsText: { color: colors.MUTED_TEXT, fontSize: 13 },
-
-  ctaBtn: {
-    backgroundColor: colors.ORANGE,
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  ctaBtnDisabled: { backgroundColor: '#a9a9a9' },
-  ctaText: { color: colors.WHITE, fontWeight: '800', fontSize: 14 },
-
-  footerLoading: { paddingVertical: 18, alignItems: 'center' },
-  footerEnd: { paddingVertical: 14, alignItems: 'center' },
-  endText: { color: colors.MUTED_TEXT, fontSize: 12 },
+  container: { flex: 1, backgroundColor: colors.CANVAS, padding: 16 },
+  h1: { color: colors.TEXT, fontWeight: '800', fontSize: 22, marginBottom: 8 },
+  rowWrap: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 },
+  controlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  clearBtn: { alignSelf: 'center', borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10, marginLeft: 6 },
+  clearTxt: { color: colors.MUTED_TEXT, fontSize: 12, fontWeight: '700' },
+  filterBox: { backgroundColor: colors.SURFACE, color: colors.TEXT, borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 12, textAlign: 'center' },
+  refreshPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.ORANGE, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12, marginLeft: 4 },
+  refreshTxt: { color: colors.WHITE, fontWeight: '800', fontSize: 12 },
+  card: { flexDirection: 'row', backgroundColor: colors.SURFACE, borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 14, gap: 6, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3, marginBottom: 12 },
+  title: { color: colors.TEXT, fontWeight: '800', fontSize: 16, marginBottom: 2 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 1 },
+  meta: { color: colors.MUTED_TEXT, fontSize: 12 },
+  subText: { color: colors.MUTED_TEXT, fontSize: 12, marginTop: 6 },
+  chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 },
+  price: { color: colors.TEXT, fontWeight: '900', fontSize: 18 },
+  joinBtn: { marginTop: 8, backgroundColor: colors.ORANGE, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 6 },
+  joinBtnJoined: { backgroundColor: '#5c6b73' },
+  joinText: { color: colors.WHITE, fontWeight: '900' },
 });
