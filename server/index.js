@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
+import attachSubmissions from './submissions.js';
 
 const app = express();
 app.use(cors());
@@ -204,6 +205,8 @@ app.get('/api/stripe/connect/status/:email', async (req, res) => {
     res.status(500).json({ success: false, error: 'stripe_error' });
   }
 });
+
+attachSubmissions(app);
 
 // ---------- Listen ----------
 app.listen(PORT, () => {
