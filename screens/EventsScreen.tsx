@@ -4,6 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
 import { getRegistrationStatus, joinEventWithCredits, loadApiBase, getApiBase, getBalance } from '../services/api';
 import { useFocusEffect } from '@react-navigation/native';
+import api from '../services/api';
+import IdChip from '../components/IdChip';
 
 type EventItem = {
   id: string;
@@ -258,6 +260,8 @@ function EventCard({ item, joined, joining, onJoin }: {
           {item.drills.map(d => <View key={d} style={s.drillChip}><Text style={s.drillChipText}>{d}</Text></View>)}
         </View>
       ) : null}
+      
+      <IdChip id={item.id} />
 
       <View style={s.footerRow}>
         <Text style={s.spotsText}>{item.spotsLeft} spot{item.spotsLeft === 1 ? '' : 's'} left</Text>
