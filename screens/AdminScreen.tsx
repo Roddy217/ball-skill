@@ -1,17 +1,18 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert } from 'react-native';
+import AutoEmail from '../components/AutoEmail';
+import AutoEventId from '../components/AutoEventId';
+import { addEmail } from '../services/emailStore';
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
-
-// Build API base from .env (Simulator: localhost, iPhone: LAN)
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/,'');
 const API = `${SERVER}/api`;
 
-async function postJSON(path: string, body: any) {
+async function postJSON(path: string, body: any, method: 'POST'|'GET' = 'POST') {
   const res = await fetch(`${API}${path}`, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
+    body: method === 'POST' ? JSON.stringify(body || {}) : undefined,
   });
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) throw new Error(data?.error || `Request failed: ${path} (HTTP ${res.status})`);
@@ -19,13 +20,24 @@ async function postJSON(path: string, body: any) {
 }
 
 async function createEvent(ev: any) { return postJSON('/events', ev); }
-async function grantCredits(email: string, delta: number) { return postJSON('/credits/grant', { email: email.trim().toLowerCase(), delta: Number(delta)||0 }); }
-async function submitResult(eventId: string, payload: any) { return postJSON(`/events/${encodeURIComponent(eventId.trim())}/submit`, payload); }
+async function grantCredits(email: string, delta: number) {
+  return postJSON('/credits/grant', { email: email.trim().toLowerCase(), delta: Number(delta)||0 });
+}
+async function submitResult(eventId: string, payload: any) {
+  return postJSON(`/events/${encodeURIComponent(eventId.trim())}/submit`, payload);
+}
+
+function msFromParts(h: string, m: string, s: string, ms: string) {
+  const H = Math.max(0, Number(h)||0);
+  const M = Math.max(0, Number(m)||0);
+  const S = Math.max(0, Number(s)||0);
+  const MS = Math.max(0, Number(ms)||0);
+  return (((H * 60 + M) * 60 + S) * 1000) + MS;
+}
 
 export default function AdminScreen() {
-  // --- Seed ---
+  // Seed
   const [seedBusy, setSeedBusy] = useState(false);
-
   const doSeed = useCallback(async () => {
     setSeedBusy(true);
     try {
@@ -36,7 +48,7 @@ export default function AdminScreen() {
       ];
       for (const ev of events) await createEvent(ev);
       for (const e of ['test@ballskill.com','alice@ballskill.com','bob@ballskill.com']) {
-        await grantCredits(e, 2500); // $25.00
+        await grantCredits(e, 2500);
       }
       Alert.alert('Seed', 'Seeded 2 events + granted $25 to 3 users.');
     } catch (e:any) {
@@ -46,16 +58,17 @@ export default function AdminScreen() {
     }
   }, []);
 
-  // --- Grant ---
+  // Grant
   const [gEmail, setGEmail] = useState('test@ballskill.com');
-  const [gDelta, setGDelta] = useState('2500'); // cents
+  const [gDelta, setGDelta] = useState('2500');
   const [gBusy, setGBusy] = useState(false);
-
   const doGrant = useCallback(async () => {
+    if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
     setGBusy(true);
     try {
       await grantCredits(gEmail, Number(gDelta)||0);
-      Alert.alert('Credits', `Granted ${Number(gDelta)/100} to ${gEmail.trim().toLowerCase()}`);
+      await addEmail(gEmail);
+      Alert.alert('Credits', `Granted ${(Number(gDelta)||0)/100} to ${gEmail.trim().toLowerCase()}`);
     } catch (e:any) {
       Alert.alert('Grant failed', String(e?.message || e));
     } finally {
@@ -63,17 +76,21 @@ export default function AdminScreen() {
     }
   }, [gEmail, gDelta]);
 
-  // --- Submit Result ---
+  // Submit Result
   const [rEventId, setREventId] = useState('');
   const [rEmail, setREmail] = useState('test@ballskill.com');
-  const [rDrill, setRDrill] = useState('FT'); // e.g., 'FT' or '3PT'
+  const [rDrill, setRDrill] = useState('FT');
   const [rMade, setRMade] = useState('8');
   const [rAttempts, setRAttempts] = useState('10');
-  const [rMs, setRMs] = useState('12000');
+  const [tH, setTH] = useState('0');
+  const [tM, setTM] = useState('0');
+  const [tS, setTS] = useState('12');
+  const [tMS, setTMS] = useState('0');
   const [rBusy, setRBusy] = useState(false);
 
   const doSubmit = useCallback(async () => {
-    if (!rEventId.trim()) { Alert.alert('Missing', 'Enter an Event ID (copy from Events tab).'); return; }
+    if (!rEventId.trim()) { Alert.alert('Missing', 'Enter an Event ID (type to search, then tap).'); return; }
+    if (!rEmail.trim()) { Alert.alert('Missing', 'Enter the player email.'); return; }
     setRBusy(true);
     try {
       await submitResult(rEventId, {
@@ -81,18 +98,23 @@ export default function AdminScreen() {
         drillType: rDrill.trim(),
         made: Number(rMade)||0,
         attempts: Number(rAttempts)||0,
-        timeMs: Number(rMs)||0,
+        timeMs: msFromParts(tH, tM, tS, tMS),
       });
+      await addEmail(rEmail);
       Alert.alert('Result', 'Saved result.');
     } catch (e:any) {
       Alert.alert('Submit failed', String(e?.message || e));
     } finally {
       setRBusy(false);
     }
-  }, [rEventId, rEmail, rDrill, rMade, rAttempts, rMs]);
+  }, [rEventId, rEmail, rDrill, rMade, rAttempts, tH, tM, tS, tMS]);
 
   return (
-    <ScrollView style={{ flex:1, backgroundColor:'#000' }} contentContainerStyle={{ padding:16, paddingBottom: 96 }}>
+    <ScrollView
+      style={{ flex:1, backgroundColor:'#000' }}
+      contentContainerStyle={{ padding:16, paddingBottom: 96 }}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={s.h1}>Admin</Text>
       <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
 
@@ -109,7 +131,7 @@ export default function AdminScreen() {
       <View style={s.card}>
         <Text style={s.cardTitle}>Grant Credits</Text>
         <Text style={s.meta}>Amount in cents (e.g., 2500 = $25)</Text>
-        <TextInput style={s.input} placeholder="email" placeholderTextColor={MUTED} value={gEmail} onChangeText={setGEmail} autoCapitalize="none" />
+        <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
         <TextInput style={s.input} placeholder="delta cents" placeholderTextColor={MUTED} value={gDelta} onChangeText={setGDelta} keyboardType="number-pad" />
         <TouchableOpacity disabled={gBusy} style={[s.btn, gBusy && s.btnDisabled]} onPress={doGrant}>
           <Text style={s.btnText}>{gBusy ? 'Granting…' : 'Grant'}</Text>
@@ -119,15 +141,36 @@ export default function AdminScreen() {
       {/* Submit */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Enter Drill Result</Text>
-        <Text style={s.meta}>Get Event ID from the Events tab card.</Text>
-        <TextInput style={s.input} placeholder="eventId" placeholderTextColor={MUTED} value={rEventId} onChangeText={setREventId} autoCapitalize="none" />
-        <TextInput style={s.input} placeholder="email" placeholderTextColor={MUTED} value={rEmail} onChangeText={setREmail} autoCapitalize="none" />
-        <TextInput style={s.input} placeholder="drillType (FT or 3PT)" placeholderTextColor={MUTED} value={rDrill} onChangeText={setRDrill} autoCapitalize="characters" />
+        <Text style={s.meta}>Pick Event ID (type a few letters of the ID or name, then tap).</Text>
+        <AutoEventId value={rEventId} onChangeText={setREventId} placeholder="eventId (searchable)" style={s.input} />
+        <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
+        <Text style={[s.meta, { marginTop: 6 }]}>drillType: <Text style={{color:'#fff'}}>{rDrill}</Text></Text>
+
+        {/* Made / Attempts labels + inputs */}
+        <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
+          <Text style={s.smallLabel}>Made</Text>
+          <Text style={s.smallLabel}>Attempts</Text>
+        </View>
         <View style={{ flexDirection:'row', gap:8 }}>
           <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
           <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
         </View>
-        <TextInput style={s.input} placeholder="timeMs (e.g., 12000)" placeholderTextColor={MUTED} value={rMs} onChangeText={setRMs} keyboardType="number-pad" />
+
+        {/* Time title + H:M:S:ms */}
+        <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
+        <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
+          <Text style={s.timeLabel}>H</Text>
+          <Text style={s.timeLabel}>M</Text>
+          <Text style={s.timeLabel}>S</Text>
+          <Text style={s.timeLabel}>ms</Text>
+        </View>
+        <View style={s.timeRow}>
+          <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
+          <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
+          <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
+          <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
+        </View>
+
         <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
           <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
         </TouchableOpacity>
@@ -142,8 +185,13 @@ const s = StyleSheet.create({
   card:{ backgroundColor: CARD, borderColor: BORDER, borderWidth:1, borderRadius:14, padding:14, marginTop:12 },
   cardTitle:{ color:'#fff', fontWeight:'800', fontSize:16, marginBottom:8 },
   meta:{ color:MUTED, fontSize:12, marginTop:2, marginBottom:8 },
+  smallLabel:{ color: MUTED, fontSize: 11, width: '50%', textAlign: 'center' },
   input:{ backgroundColor:'#090909', borderColor:'#1e1e1e', color:'#fff', borderWidth:1, borderRadius:10, paddingHorizontal:12, paddingVertical:10, marginTop:8 },
   btn:{ backgroundColor: ORANGE, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:12 },
   btnDisabled:{ opacity:0.6 },
-  btnText:{ color:'#000', fontWeight:'800' }
+  btnText:{ color:'#000', fontWeight:'800' },
+
+  timeRow:{ flexDirection:'row', gap:8, marginTop:8 },
+  timeCell:{ flex:1 },
+  timeLabel:{ color: MUTED, fontSize: 11, width: '25%', textAlign: 'center' },
 });
