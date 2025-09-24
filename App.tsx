@@ -5,6 +5,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 // screens
 import EventsScreen from './screens/EventsScreen';
+import NetStatus from './components/NetStatus';
 
 const ORANGE = '#FF6600';
 
@@ -14,6 +15,7 @@ function HomeScreen() {
       <StatusBar barStyle="light-content" />
       <Text style={s.title}>Ball Skill</Text>
       <Text style={s.sub}>Home tab — shell OK ✅</Text>
+      <NetStatus />
     </View>
   );
 }
