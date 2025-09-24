@@ -3,9 +3,10 @@ import { View, Text, StyleSheet, StatusBar } from 'react-native';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
-// screens
 import EventsScreen from './screens/EventsScreen';
 import NetStatus from './components/NetStatus';
+import AuthStatus from './components/AuthStatus';
+import { AuthProvider } from './providers/AuthProvider';
 
 const ORANGE = '#FF6600';
 
@@ -16,6 +17,7 @@ function HomeScreen() {
       <Text style={s.title}>Ball Skill</Text>
       <Text style={s.sub}>Home tab — shell OK ✅</Text>
       <NetStatus />
+      <AuthStatus />
     </View>
   );
 }
@@ -66,21 +68,23 @@ const theme = {
 export default function App() {
   return (
     <NavigationContainer theme={theme}>
-      <ErrorBoundary>
-        <Tab.Navigator
-          initialRouteName="Home"
-          screenOptions={{
-            headerStyle: { backgroundColor: '#000' },
-            headerTintColor: '#fff',
-            tabBarActiveTintColor: ORANGE,
-            tabBarInactiveTintColor: '#888',
-            tabBarStyle: { backgroundColor: '#000', borderTopColor: '#222' },
-          }}
-        >
-          <Tab.Screen name="Home" component={HomeScreen} />
-          <Tab.Screen name="Events" component={EventsScreen} />
-        </Tab.Navigator>
-      </ErrorBoundary>
+      <AuthProvider>
+        <ErrorBoundary>
+          <Tab.Navigator
+            initialRouteName="Home"
+            screenOptions={{
+              headerStyle: { backgroundColor: '#000' },
+              headerTintColor: '#fff',
+              tabBarActiveTintColor: ORANGE,
+              tabBarInactiveTintColor: '#888',
+              tabBarStyle: { backgroundColor: '#000', borderTopColor: '#222' },
+            }}
+          >
+            <Tab.Screen name="Home" component={HomeScreen} />
+            <Tab.Screen name="Events" component={EventsScreen} />
+          </Tab.Navigator>
+        </ErrorBoundary>
+      </AuthProvider>
     </NavigationContainer>
   );
 }
