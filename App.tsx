@@ -4,6 +4,7 @@ import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 import EventsScreen from './screens/EventsScreen';
+import AdminScreen from './screens/AdminScreen';
 import NetStatus from './components/NetStatus';
 import AuthStatus from './components/AuthStatus';
 import { AuthProvider } from './providers/AuthProvider';
@@ -82,6 +83,7 @@ export default function App() {
           >
             <Tab.Screen name="Home" component={HomeScreen} />
             <Tab.Screen name="Events" component={EventsScreen} />
+            <Tab.Screen name="Admin" component={AdminScreen} />
           </Tab.Navigator>
         </ErrorBoundary>
       </AuthProvider>
