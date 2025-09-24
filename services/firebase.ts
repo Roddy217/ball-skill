@@ -7,7 +7,7 @@ import {
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const config = {
+const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
@@ -16,10 +16,15 @@ const config = {
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
+console.log('Firebase cfg',
+  (firebaseConfig.apiKey ? firebaseConfig.apiKey.slice(0,6) + '…' : 'MISSING'),
+  firebaseConfig.projectId
+);
+
 let authInstance: Auth | null = null;
 
 export function initFirebase() {
-  const app = getApps().length ? getApps()[0]! : initializeApp(config as any);
+  const app = getApps().length ? getApps()[0]! : initializeApp(firebaseConfig as any);
   if (!authInstance) {
     try {
       // First/only initialization with RN persistence
