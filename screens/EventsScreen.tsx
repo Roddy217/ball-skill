@@ -2,10 +2,11 @@ import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
-import { getRegistrationStatus, joinEventWithCredits, loadApiBase, getApiBase, getBalance } from '../services/api';
+import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import IdChip from '../components/IdChip';
+import { useAuth } from '../providers/AuthProvider';
 
 type EventItem = {
   id: string;
@@ -26,7 +27,8 @@ type SortFilter =
   | 'IN_PERSON'
   | 'ONLINE'
   | 'PRICE_ASC'
-  | 'PRICE_DESC';
+  | 'PRICE_DESC'
+  | 'JOINED';
 
 const baseSeed: EventItem[] = [
   { id: 'evt_001', title: 'Ball Skill Combine', date: 'Sat, Sep 20 • 10:00 AM', startTs: new Date('2025-09-20T10:00:00-04:00').getTime(), locationType: 'in_person', venue: 'Hoop City Gym', fee: 10, spotsLeft: 8, drills: ['3PT','Midrange','Handles'] },
@@ -57,9 +59,11 @@ function generateEvent(idx: number): EventItem {
 export default function EventsScreen() {
   const [filter, setFilter] = useState<SortFilter>('SOONEST');
   const [apiBase, setApiBaseState] = useState<string>('');
+  const [balance, setBalance] = useState<string | null>(null);
 
-  // TODO(auth): replace with real user email
-  const userEmail = 'demo@ballskill.app';
+  const { user } = useAuth();
+  const userEmail = (user?.email || '').toLowerCase();
+  const hasEmail = !!(user && !user.isAnonymous && user.email);
 
   const [pool, setPool] = useState<EventItem[]>(() => {
     const first: EventItem[] = [...baseSeed];
@@ -89,10 +93,11 @@ export default function EventsScreen() {
     if (filter === 'NEWEST')    rows.sort((a, b) => b.startTs - a.startTs);
     if (filter === 'PRICE_ASC') rows.sort((a, b) => a.fee - b.fee);
     if (filter === 'PRICE_DESC')rows.sort((a, b) => b.fee - a.fee);
+    if (filter === 'JOINED')   rows = rows.filter(r => !!joinedMap[r.id]);
     const total = rows.length;
     const end = Math.min(page * PAGE_SIZE, total);
     return { visibleRows: rows.slice(0, end), totalAfterFilter: total };
-  }, [pool, filter, page]);
+  }, [pool, filter, page, joinedMap]);
 
   const hasMore = visibleRows.length < totalAfterFilter;
 
@@ -144,6 +149,10 @@ export default function EventsScreen() {
   }, [visibleRows, userEmail, joinedMap]);
 
   const onJoin = async (evt: EventItem) => {
+    if (!hasEmail) {
+      Alert.alert('Sign in', 'Please sign in on the Profile tab to join this event.');
+      return;
+    }
     if (joiningMap[evt.id]) return;
 
     // If already joined, surface the info (no extra charge)
@@ -154,19 +163,14 @@ export default function EventsScreen() {
 
     setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
     try {
-      const res = await joinEventWithCredits(evt.id, userEmail, evt.fee);
-      if (res.success) {
-        setJoinedMap(prev => ({ ...prev, [evt.id]: true }));
-        // Show balance after join (or after noticing we were already joined)
-        const bal = await getBalance(userEmail);
-        if (res.already) {
-          Alert.alert('Already joined', `No additional charge.\nCurrent balance: ${bal ?? '—'}`);
-        } else {
-          Alert.alert('Joined', `Fee: ${res.fee ?? evt.fee}\nNew balance: ${bal ?? '—'}`);
-        }
-      } else {
-        Alert.alert('Join failed', res.error || res.message || 'Unknown error');
+      const fee = Math.abs(Number(evt.fee) || 0);
+      if (fee > 0) {
+        await api.grantCredits(userEmail, -fee, `join:${evt.id}`);
       }
+      await api.recordJoin(evt.id, userEmail);
+      setJoinedMap(prev => ({ ...prev, [evt.id]: true }));
+      const bal = await getBalance(userEmail);
+      Alert.alert('Joined', `Fee: ${fee}\nNew balance: ${bal ?? '—'}`);
     } catch (e: any) {
       Alert.alert('Join failed', e?.message || 'Unknown error');
     } finally {
@@ -185,7 +189,7 @@ export default function EventsScreen() {
         <Chip label="Newest"     active={filter==='NEWEST'}     onPress={() => onSelectFilter('NEWEST')} />
         <Chip label="In-Person"  active={filter==='IN_PERSON'}  onPress={() => onSelectFilter('IN_PERSON')} />
         <Chip label="Online"     active={filter==='ONLINE'}     onPress={() => onSelectFilter('ONLINE')} />
-        <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
+        <Chip label="Joined"    active={filter==='JOINED'}    onPress={() => onSelectFilter('JOINED')} />        <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
         <Chip label="Price ↓"    active={filter==='PRICE_DESC'} onPress={() => onSelectFilter('PRICE_DESC')} />
       </View>
     </View>
