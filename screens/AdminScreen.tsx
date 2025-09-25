@@ -8,14 +8,26 @@ const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/,'');
 const API = `${SERVER}/api`;
 
-// Supported drill types (expand later if needed)
-const DRILL_TYPES = ['FT', '3PT'];
+type EventRow = {
+  id: string;
+  name?: string;
+  dateISO?: string;
+  locationType?: string;
+  feeCents?: number;
+  drillsEnabled?: string[];
+};
 
 function toDollars(cents: number) {
   const n = Number(cents || 0);
   return `$${(n / 100).toFixed(2)}`;
 }
 
+async function getJSON<T=any>(path: string) {
+  const res = await fetch(`${API}${path}`);
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data?.error || `Request failed: ${path} (HTTP ${res.status})`);
+  return data as T;
+}
 async function postJSON(path: string, body: any, method: 'POST'|'GET' = 'POST') {
   const res = await fetch(`${API}${path}`, {
     method,
@@ -27,13 +39,21 @@ async function postJSON(path: string, body: any, method: 'POST'|'GET' = 'POST') 
   return data;
 }
 
+async function fetchEvents(): Promise<EventRow[]> {
+  const data = await getJSON<{ success: boolean; events: EventRow[] }>('/events');
+  return (data?.events || []).map(e => ({
+    ...e,
+    drillsEnabled: Array.isArray(e?.drillsEnabled) ? e.drillsEnabled.map(d => String(d).toUpperCase()) : [],
+  }));
+}
+
 async function createEvent(ev: any) { return postJSON('/events', ev); }
 async function grantCredits(email: string, delta: number) {
   return postJSON('/credits/grant', { email: email.trim().toLowerCase(), delta: Number(delta)||0 });
 }
 async function getBalance(email: string): Promise<number> {
   const enc = encodeURIComponent(email.trim().toLowerCase());
-  const data = await postJSON(`/credits/${enc}`, null, 'GET') as any;
+  const data = await getJSON<{ success: boolean; balance: number }>(`/credits/${enc}`);
   return Number(data?.balance || 0);
 }
 async function submitResult(eventId: string, payload: any) {
@@ -48,28 +68,47 @@ function msFromParts(h: string, m: string, s: string, ms: string) {
   return (((H * 60 + M) * 60 + S) * 1000) + MS;
 }
 
+const DEFAULT_DRILLS = ['FT','3PT'];
+
 export default function AdminScreen() {
+  // Events cache for dynamic drills
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [evLoading, setEvLoading] = useState(false);
+  const reloadEvents = useCallback(async () => {
+    try {
+      setEvLoading(true);
+      const list = await fetchEvents();
+      setEvents(list);
+    } catch (e) {
+      // silent; UI still works with defaults
+    } finally {
+      setEvLoading(false);
+    }
+  }, []);
+  useEffect(() => { reloadEvents(); }, [reloadEvents]);
+
   // Seed
   const [seedBusy, setSeedBusy] = useState(false);
   const doSeed = useCallback(async () => {
     setSeedBusy(true);
     try {
       const now = Date.now();
-      const events = [
+      const eventsToMake = [
         { name: '3-Point Challenge', feeCents: 500, drillsEnabled: ['3PT'], locationType: 'in_person', dateISO: new Date(now + 24*3600*1000).toISOString() },
         { name: 'Free Throw Frenzy', feeCents: 300, drillsEnabled: ['FT'],  locationType: 'online',    dateISO: new Date(now + 48*3600*1000).toISOString() },
       ];
-      for (const ev of events) await createEvent(ev);
+      for (const ev of eventsToMake) await createEvent(ev);
       for (const e of ['test@ballskill.com','alice@ballskill.com','bob@ballskill.com']) {
         await grantCredits(e, 2500);
       }
+      await reloadEvents(); // so newly created events show up for autocomplete + dynamic drills
       Alert.alert('Seed', 'Seeded 2 events + granted $25 to 3 users.');
     } catch (e:any) {
       Alert.alert('Seed failed', String(e?.message || e));
     } finally {
       setSeedBusy(false);
     }
-  }, []);
+  }, [reloadEvents]);
 
   // Grant
   const [gEmail, setGEmail] = useState('test@ballskill.com');
@@ -133,7 +172,22 @@ export default function AdminScreen() {
   // Submit Result
   const [rEventId, setREventId] = useState('');
   const [rEmail, setREmail] = useState('test@ballskill.com');
-  const [rDrill, setRDrill] = useState<'FT' | '3PT'>('FT');
+
+  // Dynamic drills
+  const [availableDrills, setAvailableDrills] = useState<string[]>(DEFAULT_DRILLS);
+  const [rDrill, setRDrill] = useState<string>('FT'); // will sync with availableDrills
+  useEffect(() => {
+    if (!rEventId) {
+      setAvailableDrills(DEFAULT_DRILLS);
+      if (!DEFAULT_DRILLS.includes(rDrill)) setRDrill(DEFAULT_DRILLS[0]);
+      return;
+    }
+    const ev = events.find(e => e.id === rEventId);
+    const drills = (ev?.drillsEnabled && ev.drillsEnabled.length) ? ev.drillsEnabled.map(d => String(d).toUpperCase()) : DEFAULT_DRILLS;
+    setAvailableDrills(drills);
+    if (!drills.includes(rDrill)) setRDrill(drills[0]);
+  }, [rEventId, events]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [rMade, setRMade] = useState('8');
   const [rAttempts, setRAttempts] = useState('10');
   const [tH, setTH] = useState('0');
@@ -149,7 +203,7 @@ export default function AdminScreen() {
     try {
       await submitResult(rEventId, {
         email: rEmail.trim().toLowerCase(),
-        drillType: rDrill.trim(),
+        drillType: rDrill.trim().toUpperCase(),
         made: Number(rMade)||0,
         attempts: Number(rAttempts)||0,
         timeMs: msFromParts(tH, tM, tS, tMS),
@@ -175,7 +229,7 @@ export default function AdminScreen() {
       contentContainerStyle={{ padding:16, paddingBottom: 96 }}
       keyboardShouldPersistTaps="handled"
     >
-      <Text style={s.h1}>Admin</Text>
+      <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
       <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
 
       {/* Seed */}
@@ -249,29 +303,38 @@ export default function AdminScreen() {
         <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
         <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
 
-        {/* Drill Type */}
+        {/* Drill Type (dynamic) */}
         <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
+        {availableDrills.length > 0 && (
+          <Text style={[s.meta, { marginTop: -4 }]}>
+            Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
+          </Text>
+        )}
         <View style={s.chipRow}>
-          {DRILL_TYPES.map(dt => {
+          {availableDrills.map(dt => {
             const selected = rDrill === dt;
             return (
               <TouchableOpacity
                 key={dt}
                 style={[s.drillChip, selected && s.drillChipActive]}
-                onPress={() => setRDrill(dt as 'FT'|'3PT')}
+                onPress={() => setRDrill(dt)}
               >
                 <Text style={[s.drillChipText, selected && s.drillChipTextActive]}>{dt}</Text>
               </TouchableOpacity>
             );
           })}
         </View>
-        {/* Optional: allow typing to set drill type */}
+        {/* Optional: allow typing; auto-match available list */}
         <TextInput
           style={s.input}
-          placeholder="type to set (e.g., FT or 3PT)"
+          placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
           placeholderTextColor={MUTED}
           value={rDrill}
-          onChangeText={(t) => setRDrill((t || '').toUpperCase() as 'FT'|'3PT')}
+          onChangeText={(t) => {
+            const up = (t || '').toUpperCase();
+            const match = availableDrills.find(d => d.startsWith(up));
+            setRDrill(match || up);
+          }}
           autoCapitalize="characters"
         />
 
