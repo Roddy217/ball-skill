@@ -8,6 +8,9 @@ const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/,'');
 const API = `${SERVER}/api`;
 
+// Supported drill types (expand later if needed)
+const DRILL_TYPES = ['FT', '3PT'];
+
 function toDollars(cents: number) {
   const n = Number(cents || 0);
   return `$${(n / 100).toFixed(2)}`;
@@ -130,7 +133,7 @@ export default function AdminScreen() {
   // Submit Result
   const [rEventId, setREventId] = useState('');
   const [rEmail, setREmail] = useState('test@ballskill.com');
-  const [rDrill, setRDrill] = useState('FT');
+  const [rDrill, setRDrill] = useState<'FT' | '3PT'>('FT');
   const [rMade, setRMade] = useState('8');
   const [rAttempts, setRAttempts] = useState('10');
   const [tH, setTH] = useState('0');
@@ -246,8 +249,33 @@ export default function AdminScreen() {
         <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
         <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
 
-        <Text style={[s.meta, { marginTop: 6 }]}>drillType: <Text style={{color:'#fff'}}>{rDrill}</Text></Text>
+        {/* Drill Type */}
+        <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
+        <View style={s.chipRow}>
+          {DRILL_TYPES.map(dt => {
+            const selected = rDrill === dt;
+            return (
+              <TouchableOpacity
+                key={dt}
+                style={[s.drillChip, selected && s.drillChipActive]}
+                onPress={() => setRDrill(dt as 'FT'|'3PT')}
+              >
+                <Text style={[s.drillChipText, selected && s.drillChipTextActive]}>{dt}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        {/* Optional: allow typing to set drill type */}
+        <TextInput
+          style={s.input}
+          placeholder="type to set (e.g., FT or 3PT)"
+          placeholderTextColor={MUTED}
+          value={rDrill}
+          onChangeText={(t) => setRDrill((t || '').toUpperCase() as 'FT'|'3PT')}
+          autoCapitalize="characters"
+        />
 
+        {/* Made / Attempts */}
         <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
           <Text style={s.smallLabel}>Made</Text>
           <Text style={s.smallLabel}>Attempts</Text>
@@ -257,6 +285,7 @@ export default function AdminScreen() {
           <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
         </View>
 
+        {/* Time */}
         <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
         <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
           <Text style={s.timeLabel}>H</Text>
@@ -299,10 +328,16 @@ const s = StyleSheet.create({
   amountRow:{ flexDirection:'row', alignItems:'center', gap:8 },
   amountPreview:{ color:'#fff', fontWeight:'700', minWidth:80, textAlign:'right' },
 
-  // Chips
+  // Chips (shared)
   chipRow:{ flexDirection:'row', flexWrap:'wrap', gap:8, marginTop:8 },
   chip:{ backgroundColor:'#0b0b0b', borderColor:'#2a2a2a', borderWidth:1, paddingVertical:6, paddingHorizontal:10, borderRadius:999 },
   chipText:{ color:'#fff', fontWeight:'700', fontSize:12 },
+
+  // Drill chips (selected state)
+  drillChip:{ backgroundColor:'#0b0b0b', borderColor:'#2a2a2a', borderWidth:1, paddingVertical:6, paddingHorizontal:10, borderRadius:999 },
+  drillChipActive:{ backgroundColor: ORANGE, borderColor: ORANGE },
+  drillChipText:{ color:'#fff', fontWeight:'700', fontSize:12 },
+  drillChipTextActive:{ color:'#000', fontWeight:'800' },
 
   // Time inputs
   timeRow:{ flexDirection:'row', gap:8, marginTop:8 },
