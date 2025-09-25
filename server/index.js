@@ -4,8 +4,10 @@ import cors from 'cors';
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
 import attachSubmissions from './submissions.js';
+import attachJoins from './joins.js';
 
 const app = express();
+attachJoins(app);
 app.use(cors());
 app.use(express.json());
 
