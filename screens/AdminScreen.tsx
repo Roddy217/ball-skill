@@ -6,6 +6,7 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
+import { useAuth } from '../providers/AuthProvider';
 import { addEmail } from '../services/emailStore';
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
@@ -83,6 +84,19 @@ function msFromParts(h: string, m: string, s: string, ms: string) {
 const DEFAULT_DRILLS = ['FT','3PT'];
 
 export default function AdminScreen() {
+  const { user } = useAuth();
+  const email = user?.email?.toLowerCase() || '';
+  const adminAllowed = email === 'admin@ballskill.com' || email === 'support@ballskill.com';
+  if (!adminAllowed) {
+    return (
+      <View style={{ flex:1, backgroundColor:'#000', padding:16 }}>
+        <Text style={{ color:'#fff', fontSize:18, fontWeight:'800' }}>Admins only</Text>
+        <Text style={{ color:'#9a9a9a', marginTop:8 }}>
+          Sign in as admin@ballskill.com or support@ballskill.com to access this section.
+        </Text>
+      </View>
+    );
+  }
   // Events cache for dynamic drills
   const [events, setEvents] = useState<EventRow[]>([]);
   const [evLoading, setEvLoading] = useState(false);
