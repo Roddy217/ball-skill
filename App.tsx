@@ -1,91 +1,43 @@
 import React from 'react';
-import { View, Text, StyleSheet, StatusBar } from 'react-native';
-import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
+import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-
-import EventsScreen from './screens/EventsScreen';
-import AdminScreen from './screens/AdminScreen';
-import NetStatus from './components/NetStatus';
-import AuthStatus from './components/AuthStatus';
-import { AuthProvider } from './providers/AuthProvider';
+import { StyleSheet, Text, View } from 'react-native';
+import { AuthProvider, useAuth } from './providers/AuthProvider';
 
 const ORANGE = '#FF6600';
 
-function HomeScreen() {
-  return (
-    <View style={s.container}>
-      <StatusBar barStyle="light-content" />
-      <Text style={s.title}>Ball Skill</Text>
-      <Text style={s.sub}>Home tab — shell OK ✅</Text>
-      <NetStatus />
-      <AuthStatus />
-    </View>
-  );
-}
-
-function ErrorBoundary({ children }: { children: React.ReactNode }) {
-  const [err, setErr] = React.useState<Error | null>(null);
-  if (err) {
-    return (
-      <View style={[s.container, { padding: 16 }]}>
-        <Text style={s.title}>Something went wrong</Text>
-        <Text style={s.errMsg}>{String(err.message || err)}</Text>
-      </View>
-    );
-  }
-  return (
-    <React.Suspense fallback={
-      <View style={s.container}><Text style={s.sub}>Loading…</Text></View>
-    }>
-      <ErrorCatcher onError={setErr}>{children}</ErrorCatcher>
-    </React.Suspense>
-  );
-}
-
-function ErrorCatcher({ children, onError }: { children: React.ReactNode; onError: (e: Error)=>void }) {
-  const ref = React.useRef(onError);
-  ref.current = onError;
-  React.useEffect(() => {
-    const orig = console.error;
-    console.error = (...args: any[]) => {
-      try {
-        const first = args?.[0];
-        if (first instanceof Error) ref.current(first);
-      } catch {}
-      orig(...args);
-    };
-    return () => { console.error = orig; };
-  }, []);
-  return <>{children}</>;
-}
+const DashboardScreen = require('./screens/DashboardScreen').default;
+const EventsScreen = require('./screens/EventsScreen').default;
+const AdminScreen = require('./screens/AdminScreen').default;
+const ProfileScreen = require('./screens/ProfileScreen').default;
 
 const Tab = createBottomTabNavigator();
 
-const theme = {
-  ...DefaultTheme,
-  colors: { ...DefaultTheme.colors, background: '#000', card: '#000', text: '#fff', border: '#111' },
-};
+function Tabs() {
+  const { isAdmin } = useAuth();
+  return (
+    <Tab.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: '#000' },
+        headerTintColor: '#fff',
+        tabBarActiveTintColor: ORANGE,
+        tabBarInactiveTintColor: '#888',
+        tabBarStyle: { backgroundColor: '#000', borderTopColor: '#222' },
+      }}
+    >
+      <Tab.Screen name="Dashboard" component={DashboardScreen} />
+      <Tab.Screen name="Events" component={EventsScreen} />
+      {isAdmin && <Tab.Screen name="Admin" component={AdminScreen} />}
+      <Tab.Screen name="Profile" component={ProfileScreen} />
+    </Tab.Navigator>
+  );
+}
 
 export default function App() {
   return (
-    <NavigationContainer theme={theme}>
+    <NavigationContainer>
       <AuthProvider>
-        <ErrorBoundary>
-          <Tab.Navigator
-            initialRouteName="Home"
-            screenOptions={{
-              headerStyle: { backgroundColor: '#000' },
-              headerTintColor: '#fff',
-              tabBarActiveTintColor: ORANGE,
-              tabBarInactiveTintColor: '#888',
-              tabBarStyle: { backgroundColor: '#000', borderTopColor: '#222' },
-            }}
-          >
-            <Tab.Screen name="Home" component={HomeScreen} />
-            <Tab.Screen name="Events" component={EventsScreen} />
-            <Tab.Screen name="Admin" component={AdminScreen} />
-          </Tab.Navigator>
-        </ErrorBoundary>
+        <Tabs />
       </AuthProvider>
     </NavigationContainer>
   );
