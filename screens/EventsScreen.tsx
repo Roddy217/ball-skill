@@ -178,7 +178,6 @@ export default function EventsScreen() {
   const ChipsHeader = (
     <View style={s.chipsSticky}>
       <View style={s.chipsRowTop}>
-        <Text style={s.apiBadge} numberOfLines={1}>API: {apiBase ? apiBase.replace(/^https?:\/\//,'') : '—'}</Text>
       </View>
       <View style={s.chipsGroup}>
         <Chip label="All"        active={filter==='ALL'}        onPress={() => onSelectFilter('ALL')} />
@@ -255,13 +254,13 @@ function EventCard({ item, joined, joining, onJoin }: {
         <Text style={s.metaText}>{item.locationType === 'online' ? 'Online' : item.venue ?? 'In person'}</Text>
       </View>
 
+      <IdChip id={item.id} />
+
       {item.drills?.length ? (
         <View style={s.drillChipsRow}>
           {item.drills.map(d => <View key={d} style={s.drillChip}><Text style={s.drillChipText}>{d}</Text></View>)}
         </View>
       ) : null}
-      
-      <IdChip id={item.id} />
 
       <View style={s.footerRow}>
         <Text style={s.spotsText}>{item.spotsLeft} spot{item.spotsLeft === 1 ? '' : 's'} left</Text>

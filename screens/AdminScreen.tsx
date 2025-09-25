@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
 import { addEmail } from '../services/emailStore';
@@ -101,7 +101,7 @@ export default function AdminScreen() {
       for (const e of ['test@ballskill.com','alice@ballskill.com','bob@ballskill.com']) {
         await grantCredits(e, 2500);
       }
-      await reloadEvents(); // so newly created events show up for autocomplete + dynamic drills
+      await reloadEvents(); // reflect new events
       Alert.alert('Seed', 'Seeded 2 events + granted $25 to 3 users.');
     } catch (e:any) {
       Alert.alert('Seed failed', String(e?.message || e));
@@ -175,7 +175,7 @@ export default function AdminScreen() {
 
   // Dynamic drills
   const [availableDrills, setAvailableDrills] = useState<string[]>(DEFAULT_DRILLS);
-  const [rDrill, setRDrill] = useState<string>('FT'); // will sync with availableDrills
+  const [rDrill, setRDrill] = useState<string>('FT');
   useEffect(() => {
     if (!rEventId) {
       setAvailableDrills(DEFAULT_DRILLS);
@@ -186,7 +186,7 @@ export default function AdminScreen() {
     const drills = (ev?.drillsEnabled && ev.drillsEnabled.length) ? ev.drillsEnabled.map(d => String(d).toUpperCase()) : DEFAULT_DRILLS;
     setAvailableDrills(drills);
     if (!drills.includes(rDrill)) setRDrill(drills[0]);
-  }, [rEventId, events]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rEventId, events]); // sync drill options with selected event
 
   const [rMade, setRMade] = useState('8');
   const [rAttempts, setRAttempts] = useState('10');
@@ -224,150 +224,161 @@ export default function AdminScreen() {
   const chipLabel = (c: number) => `${c < 0 ? '−' : '+'}${toDollars(Math.abs(c)).replace('$','\$')}`;
 
   return (
-    <ScrollView
-      style={{ flex:1, backgroundColor:'#000' }}
-      contentContainerStyle={{ padding:16, paddingBottom: 96 }}
-      keyboardShouldPersistTaps="handled"
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
     >
-      <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
-      <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
+      <ScrollView
+        style={{ flex:1, backgroundColor:'#000' }}
+        contentContainerStyle={{ padding:16, paddingBottom: 200 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        scrollIndicatorInsets={{ bottom: 80 }}
+      >
+        <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
+        <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
 
-      {/* Seed */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Seed Demo Data</Text>
-        <Text style={s.meta}>Creates 2 events and grants $25 to a few test users.</Text>
-        <TouchableOpacity disabled={seedBusy} style={[s.btn, seedBusy && s.btnDisabled]} onPress={doSeed}>
-          <Text style={s.btnText}>{seedBusy ? 'Seeding…' : 'Run Seed'}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Grant */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
-
-        {/* Email */}
-        <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
-        <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
-        <View style={{ minHeight:18, marginTop:6 }}>
-          {gBalLoading ? (
-            <View style={{ flexDirection:'row', alignItems:'center', gap:6 }}>
-              <ActivityIndicator color={ORANGE} size="small" />
-              <Text style={s.meta}>Fetching balance…</Text>
-            </View>
-          ) : (gBal != null) ? (
-            <Text style={s.meta}>Balance: <Text style={{color:'#fff'}}>{toDollars(gBal)}</Text></Text>
-          ) : null}
-        </View>
-
-        {/* Amount */}
-        <Text style={[s.meta, { marginTop: 10 }]}>Amount (cents)</Text>
-        <View style={s.amountRow}>
-          <TextInput
-            style={[s.input, { flex:1 }]}
-            placeholder="delta cents (e.g., 500)"
-            placeholderTextColor={MUTED}
-            value={gDelta}
-            onChangeText={setGDelta}
-            keyboardType="number-pad"
-          />
-          <Text style={s.amountPreview}>= {toDollars(gDeltaNum)}</Text>
-        </View>
-
-        {/* Quick chips */}
-        <View style={s.chipRow}>
-          {chips.map(c => (
-            <TouchableOpacity key={c} style={s.chip} onPress={() => setGDelta(String(c))}>
-              <Text style={s.chipText}>{chipLabel(c)}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* Actions */}
-        <View style={{ flexDirection:'row', gap:10 }}>
-          <TouchableOpacity disabled={gBusy} style={[s.btn, { flex:1 }, gBusy && s.btnDisabled]} onPress={doGrant}>
-            <Text style={s.btnText}>{gBusy ? 'Working…' : 'Grant'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity disabled={gBusy} style={[s.btnOutline, { flex:1 }, gBusy && s.btnDisabled]} onPress={doDeduct}>
-            <Text style={s.btnOutlineText}>{gBusy ? 'Working…' : 'Deduct'}</Text>
+        {/* Seed */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Seed Demo Data</Text>
+          <Text style={s.meta}>Creates 2 events and grants $25 to a few test users.</Text>
+          <TouchableOpacity disabled={seedBusy} style={[s.btn, seedBusy && s.btnDisabled]} onPress={doSeed}>
+            <Text style={s.btnText}>{seedBusy ? 'Seeding…' : 'Run Seed'}</Text>
           </TouchableOpacity>
         </View>
-      </View>
 
-      {/* Submit */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Enter Drill Result</Text>
+        {/* Grant */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
 
-        <Text style={s.meta}>Event ID</Text>
-        <AutoEventId value={rEventId} onChangeText={setREventId} placeholder="eventId (searchable)" style={s.input} />
+          {/* Email */}
+          <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
+          <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
+          <View style={{ minHeight:18, marginTop:6 }}>
+            {gBalLoading ? (
+              <View style={{ flexDirection:'row', alignItems:'center', gap:6 }}>
+                <ActivityIndicator color={ORANGE} size="small" />
+                <Text style={s.meta}>Fetching balance…</Text>
+              </View>
+            ) : (gBal != null) ? (
+              <Text style={s.meta}>Balance: <Text style={{color:'#fff'}}>{toDollars(gBal)}</Text></Text>
+            ) : null}
+          </View>
 
-        <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
-        <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
+          {/* Amount */}
+          <Text style={[s.meta, { marginTop: 10 }]}>Amount (cents)</Text>
+          <View style={s.amountRow}>
+            <TextInput
+              style={[s.input, { flex:1 }]}
+              placeholder="delta cents (e.g., 500)"
+              placeholderTextColor={MUTED}
+              value={gDelta}
+              onChangeText={setGDelta}
+              keyboardType="number-pad"
+            />
+            <Text style={s.amountPreview}>= {toDollars(gDeltaNum)}</Text>
+          </View>
 
-        {/* Drill Type (dynamic) */}
-        <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
-        {availableDrills.length > 0 && (
-          <Text style={[s.meta, { marginTop: -4 }]}>
-            Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
-          </Text>
-        )}
-        <View style={s.chipRow}>
-          {availableDrills.map(dt => {
-            const selected = rDrill === dt;
-            return (
-              <TouchableOpacity
-                key={dt}
-                style={[s.drillChip, selected && s.drillChipActive]}
-                onPress={() => setRDrill(dt)}
-              >
-                <Text style={[s.drillChipText, selected && s.drillChipTextActive]}>{dt}</Text>
+          {/* Quick chips */}
+          <View style={s.chipRow}>
+            {chips.map(c => (
+              <TouchableOpacity key={c} style={s.chip} onPress={() => setGDelta(String(c))}>
+                <Text style={s.chipText}>{chipLabel(c)}</Text>
               </TouchableOpacity>
-            );
-          })}
-        </View>
-        {/* Optional: allow typing; auto-match available list */}
-        <TextInput
-          style={s.input}
-          placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
-          placeholderTextColor={MUTED}
-          value={rDrill}
-          onChangeText={(t) => {
-            const up = (t || '').toUpperCase();
-            const match = availableDrills.find(d => d.startsWith(up));
-            setRDrill(match || up);
-          }}
-          autoCapitalize="characters"
-        />
+            ))}
+          </View>
 
-        {/* Made / Attempts */}
-        <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
-          <Text style={s.smallLabel}>Made</Text>
-          <Text style={s.smallLabel}>Attempts</Text>
-        </View>
-        <View style={{ flexDirection:'row', gap:8 }}>
-          <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
-          <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
+          {/* Actions */}
+          <View style={{ flexDirection:'row', gap:10 }}>
+            <TouchableOpacity disabled={gBusy} style={[s.btn, { flex:1 }, gBusy && s.btnDisabled]} onPress={doGrant}>
+              <Text style={s.btnText}>{gBusy ? 'Working…' : 'Grant'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity disabled={gBusy} style={[s.btnOutline, { flex:1 }, gBusy && s.btnDisabled]} onPress={doDeduct}>
+              <Text style={s.btnOutlineText}>{gBusy ? 'Working…' : 'Deduct'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Time */}
-        <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
-        <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
-          <Text style={s.timeLabel}>H</Text>
-          <Text style={s.timeLabel}>M</Text>
-          <Text style={s.timeLabel}>S</Text>
-          <Text style={s.timeLabel}>ms</Text>
-        </View>
-        <View style={s.timeRow}>
-          <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
-          <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
-          <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
-          <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
+        {/* Submit */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Enter Drill Result</Text>
+
+          <Text style={s.meta}>Event ID</Text>
+          <AutoEventId value={rEventId} onChangeText={setREventId} placeholder="eventId (searchable)" style={s.input} />
+
+          <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
+          <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
+
+          {/* Drill Type (dynamic) */}
+          <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
+          {availableDrills.length > 0 && (
+            <Text style={[s.meta, { marginTop: -4 }]}>
+              Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
+            </Text>
+          )}
+          <View style={s.chipRow}>
+            {availableDrills.map(dt => {
+              const selected = rDrill === dt;
+              return (
+                <TouchableOpacity
+                  key={dt}
+                  style={[s.drillChip, selected && s.drillChipActive]}
+                  onPress={() => setRDrill(dt)}
+                >
+                  <Text style={[s.drillChipText, selected && s.drillChipTextActive]}>{dt}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          {/* Optional: allow typing; auto-match available list */}
+          <TextInput
+            style={s.input}
+            placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
+            placeholderTextColor={MUTED}
+            value={rDrill}
+            onChangeText={(t) => {
+              const up = (t || '').toUpperCase();
+              const match = availableDrills.find(d => d.startsWith(up));
+              setRDrill(match || up);
+            }}
+            autoCapitalize="characters"
+          />
+
+          {/* Made / Attempts */}
+          <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
+            <Text style={s.smallLabel}>Made</Text>
+            <Text style={s.smallLabel}>Attempts</Text>
+          </View>
+          <View style={{ flexDirection:'row', gap:8 }}>
+            <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
+            <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
+          </View>
+
+          {/* Time */}
+          <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
+            <Text style={s.timeLabel}>H</Text>
+            <Text style={s.timeLabel}>M</Text>
+            <Text style={s.timeLabel}>S</Text>
+            <Text style={s.timeLabel}>ms</Text>
+          </View>
+          <View style={s.timeRow}>
+            <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
+            <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
+            <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
+            <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
+          </View>
+
+          <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
+            <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
-          <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+        {/* spacer so last control never hides behind keyboard */}
+        <View style={{ height: 40 }} />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
