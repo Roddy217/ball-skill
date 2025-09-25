@@ -217,11 +217,9 @@ export default function AdminScreen() {
     }
   }, [rEventId, rEmail, rDrill, rMade, rAttempts, tH, tM, tS, tMS]);
 
-  // Quick chips (cents)
-  const chips = useMemo(() => ([
-    -1000, -500, -100, 100, 500, 1000, 2500
-  ]), []);
-  const chipLabel = (c: number) => `${c < 0 ? '−' : '+'}${toDollars(Math.abs(c)).replace('$','\$')}`;
+  // Quick chips (cents) - positive only, since Grant adds and Deduct subtracts
+  const chips = useMemo(() => ([100, 500, 1000, 2500, 5000]), []);
+  const chipLabel = (c: number) => toDollars(c);
 
   return (
     <KeyboardAvoidingView
