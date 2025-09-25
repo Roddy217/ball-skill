@@ -16,11 +16,13 @@ type EventRow = {
   feeCents?: number;
   drillsEnabled?: string[];
 };
+type HistRow = { ts: number; delta: number; note?: string | null; balanceAfter: number };
 
 function toDollars(cents: number) {
   const n = Number(cents || 0);
   return `$${(n / 100).toFixed(2)}`;
 }
+const fmtDelta = (n: number) => `${n >= 0 ? '+' : ''}${toDollars(n)}`;
 
 async function getJSON<T=any>(path: string) {
   const res = await fetch(`${API}${path}`);
@@ -46,10 +48,16 @@ async function fetchEvents(): Promise<EventRow[]> {
     drillsEnabled: Array.isArray(e?.drillsEnabled) ? e.drillsEnabled.map(d => String(d).toUpperCase()) : [],
   }));
 }
+async function fetchHistory(email: string, q: string, limit = 50): Promise<HistRow[]> {
+  const enc = encodeURIComponent(email.trim().toLowerCase());
+  const url = `/credits/${enc}/history?limit=${Math.max(1, Math.min(200, limit))}` + (q ? `&q=${encodeURIComponent(q)}` : '');
+  const data = await getJSON<{ success: boolean; history: HistRow[] }>(url);
+  return data?.history || [];
+}
 
 async function createEvent(ev: any) { return postJSON('/events', ev); }
-async function grantCredits(email: string, delta: number) {
-  return postJSON('/credits/grant', { email: email.trim().toLowerCase(), delta: Number(delta)||0 });
+async function applyCredits(email: string, delta: number, note?: string) {
+  return postJSON('/credits/apply', { email: email.trim().toLowerCase(), delta: Number(delta)||0, note: (note || '').trim() || undefined });
 }
 async function getBalance(email: string): Promise<number> {
   const enc = encodeURIComponent(email.trim().toLowerCase());
@@ -79,8 +87,8 @@ export default function AdminScreen() {
       setEvLoading(true);
       const list = await fetchEvents();
       setEvents(list);
-    } catch (e) {
-      // silent; UI still works with defaults
+    } catch {
+      // silent
     } finally {
       setEvLoading(false);
     }
@@ -99,7 +107,7 @@ export default function AdminScreen() {
       ];
       for (const ev of eventsToMake) await createEvent(ev);
       for (const e of ['test@ballskill.com','alice@ballskill.com','bob@ballskill.com']) {
-        await grantCredits(e, 2500);
+        await applyCredits(e, 2500, 'seed');
       }
       await reloadEvents(); // reflect new events
       Alert.alert('Seed', 'Seeded 2 events + granted $25 to 3 users.');
@@ -110,30 +118,53 @@ export default function AdminScreen() {
     }
   }, [reloadEvents]);
 
-  // Grant
+  // Grant/Deduct
   const [gEmail, setGEmail] = useState('test@ballskill.com');
   const [gDelta, setGDelta] = useState('2500'); // cents
+  const [gNote, setGNote] = useState('');       // NEW: note
   const [gBusy, setGBusy] = useState(false);
   const [gBal, setGBal] = useState<number | null>(null);
   const [gBalLoading, setGBalLoading] = useState(false);
 
-  // debounce balance fetch on email change
+  // History
+  const [hItems, setHItems] = useState<HistRow[]>([]);
+  const [hLoading, setHLoading] = useState(false);
+  const [hQ, setHQ] = useState('');
+  const [hLimit, setHLimit] = useState('50');
+
+  const loadHistory = useCallback(async (email: string, q: string, limitNum: number) => {
+    if (!email.trim()) { setHItems([]); return; }
+    setHLoading(true);
+    try {
+      const list = await fetchHistory(email, q, limitNum);
+      setHItems(list);
+    } catch {
+      setHItems([]);
+    } finally {
+      setHLoading(false);
+    }
+  }, []);
+
+  // debounce: balance + history when email or filter changes
   useEffect(() => {
     let t: any;
-    if (!gEmail.trim()) { setGBal(null); return; }
+    const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
+    if (!gEmail.trim()) { setGBal(null); setHItems([]); return; }
     setGBalLoading(true);
     t = setTimeout(async () => {
       try {
-        const bal = await getBalance(gEmail);
+        const [bal] = await Promise.all([
+          getBalance(gEmail),
+        ]);
         setGBal(bal);
-      } catch {
-        setGBal(null);
       } finally {
         setGBalLoading(false);
       }
+      // history fetch (no need to block balance)
+      loadHistory(gEmail, hQ, limitNum);
     }, 300);
     return () => clearTimeout(t);
-  }, [gEmail]);
+  }, [gEmail, hQ, hLimit, loadHistory]);
 
   const gDeltaNum = useMemo(() => Number(gDelta) || 0, [gDelta]);
 
@@ -141,33 +172,39 @@ export default function AdminScreen() {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
     setGBusy(true);
     try {
-      await grantCredits(gEmail, Math.abs(Number(gDelta)||0));
+      await applyCredits(gEmail, Math.abs(Number(gDelta)||0), gNote);
       await addEmail(gEmail);
       const bal = await getBalance(gEmail);
       setGBal(bal);
-      Alert.alert('Credits', `Granted ${toDollars(Math.abs(Number(gDelta)||0))} to ${gEmail.trim().toLowerCase()}`);
+      // refresh history immediately
+      const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
+      await loadHistory(gEmail, hQ, limitNum);
+      Alert.alert('Credits', `Granted ${fmtDelta(Math.abs(Number(gDelta)||0))} to ${gEmail.trim().toLowerCase()}`);
     } catch (e:any) {
       Alert.alert('Grant failed', String(e?.message || e));
     } finally {
       setGBusy(false);
     }
-  }, [gEmail, gDelta]);
+  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory]);
 
   const doDeduct = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
     setGBusy(true);
     try {
-      await grantCredits(gEmail, -Math.abs(Number(gDelta)||0));
+      await applyCredits(gEmail, -Math.abs(Number(gDelta)||0), gNote);
       await addEmail(gEmail);
       const bal = await getBalance(gEmail);
       setGBal(bal);
-      Alert.alert('Credits', `Deducted ${toDollars(Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`);
+      // refresh history immediately
+      const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
+      await loadHistory(gEmail, hQ, limitNum);
+      Alert.alert('Credits', `Deducted ${fmtDelta(-Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`);
     } catch (e:any) {
       Alert.alert('Deduct failed', String(e?.message || e));
     } finally {
       setGBusy(false);
     }
-  }, [gEmail, gDelta]);
+  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory]);
 
   // Submit Result
   const [rEventId, setREventId] = useState('');
@@ -217,7 +254,7 @@ export default function AdminScreen() {
     }
   }, [rEventId, rEmail, rDrill, rMade, rAttempts, tH, tM, tS, tMS]);
 
-  // Quick chips (cents) - positive only, since Grant adds and Deduct subtracts
+  // Quick chips (cents) - positive only
   const chips = useMemo(() => ([100, 500, 1000, 2500, 5000]), []);
   const chipLabel = (c: number) => toDollars(c);
 
@@ -246,7 +283,7 @@ export default function AdminScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Grant */}
+        {/* Grant / Deduct */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
 
@@ -287,6 +324,16 @@ export default function AdminScreen() {
             ))}
           </View>
 
+          {/* Note */}
+          <Text style={[s.meta, { marginTop: 10 }]}>Note (optional)</Text>
+          <TextInput
+            style={s.input}
+            placeholder="e.g., refund / promo / manual adj"
+            placeholderTextColor={MUTED}
+            value={gNote}
+            onChangeText={setGNote}
+          />
+
           {/* Actions */}
           <View style={{ flexDirection:'row', gap:10 }}>
             <TouchableOpacity disabled={gBusy} style={[s.btn, { flex:1 }, gBusy && s.btnDisabled]} onPress={doGrant}>
@@ -296,9 +343,59 @@ export default function AdminScreen() {
               <Text style={s.btnOutlineText}>{gBusy ? 'Working…' : 'Deduct'}</Text>
             </TouchableOpacity>
           </View>
+
+          {/* History */}
+          <Text style={[s.meta, { marginTop: 12 }]}>History</Text>
+          <View style={{ flexDirection:'row', gap:8 }}>
+            <TextInput
+              style={[s.input, { flex:1 }]}
+              placeholder="search notes (optional)"
+              placeholderTextColor={MUTED}
+              value={hQ}
+              onChangeText={setHQ}
+            />
+            <TextInput
+              style={[s.input, { width:90, textAlign:'center' }]}
+              placeholder="limit"
+              placeholderTextColor={MUTED}
+              value={hLimit}
+              onChangeText={setHLimit}
+              keyboardType="number-pad"
+            />
+          </View>
+          <View style={s.historyBox}>
+            {hLoading ? (
+              <View style={{ padding:12, flexDirection:'row', alignItems:'center', gap:8 }}>
+                <ActivityIndicator color={ORANGE} />
+                <Text style={s.meta}>Loading history…</Text>
+              </View>
+            ) : hItems.length === 0 ? (
+              <Text style={[s.meta, { padding:12 }]}>No history.</Text>
+            ) : (
+              <ScrollView style={s.historyScroll} nestedScrollEnabled>
+                {hItems.map((it, idx) => {
+                  const color = it.delta >= 0 ? '#2ecc71' : '#ff4d4f';
+                  const when = new Date(it.ts).toLocaleString();
+                  return (
+                    <View key={idx} style={s.historyRow}>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                        <Text style={[s.histDelta, { color }]}>{fmtDelta(it.delta)}</Text>
+                        <Text style={s.histWhen}>{when}</Text>
+                      </View>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
+                        <Text style={s.histBalance}>Balance: {toDollars(it.balanceAfter)}</Text>
+                        {it.note ? <Text style={s.histNote} numberOfLines={1}>{it.note}</Text> : null}
+                      </View>
+                    </View>
+                  );
+                })}
+                <View style={{ height: 6 }} />
+              </ScrollView>
+            )}
+          </View>
         </View>
 
-        {/* Submit */}
+        {/* Submit Result */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Enter Drill Result</Text>
 
@@ -329,7 +426,6 @@ export default function AdminScreen() {
               );
             })}
           </View>
-          {/* Optional: allow typing; auto-match available list */}
           <TextInput
             style={s.input}
             placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
@@ -410,6 +506,15 @@ const s = StyleSheet.create({
   drillChipActive:{ backgroundColor: ORANGE, borderColor: ORANGE },
   drillChipText:{ color:'#fff', fontWeight:'700', fontSize:12 },
   drillChipTextActive:{ color:'#000', fontWeight:'800' },
+
+  // History styles
+  historyBox:{ backgroundColor:'#0b0b0b', borderColor:'#1e1e1e', borderWidth:1, borderRadius:10, marginTop:8, overflow:'hidden' },
+  historyScroll:{ maxHeight: 260 },
+  historyRow:{ paddingVertical:10, paddingHorizontal:12, borderBottomColor:'#161616', borderBottomWidth:1 },
+  histDelta:{ fontWeight:'800', fontSize:13 },
+  histWhen:{ color:MUTED, fontSize:11, marginLeft:8 },
+  histBalance:{ color:'#fff', fontSize:12, fontWeight:'600' },
+  histNote:{ color:'#ddd', fontSize:12, marginLeft:8, maxWidth:'60%', textAlign:'right' },
 
   // Time inputs
   timeRow:{ flexDirection:'row', gap:8, marginTop:8 },
