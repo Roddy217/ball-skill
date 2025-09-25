@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import {
+  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
+  Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Linking
+} from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
 import { addEmail } from '../services/emailStore';
@@ -121,7 +125,7 @@ export default function AdminScreen() {
   // Grant/Deduct
   const [gEmail, setGEmail] = useState('test@ballskill.com');
   const [gDelta, setGDelta] = useState('2500'); // cents
-  const [gNote, setGNote] = useState('');       // NEW: note
+  const [gNote, setGNote] = useState('');       // note
   const [gBusy, setGBusy] = useState(false);
   const [gBal, setGBal] = useState<number | null>(null);
   const [gBalLoading, setGBalLoading] = useState(false);
@@ -131,6 +135,8 @@ export default function AdminScreen() {
   const [hLoading, setHLoading] = useState(false);
   const [hQ, setHQ] = useState('');
   const [hLimit, setHLimit] = useState('50');
+  const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest');
+  const [signFilter, setSignFilter] = useState<'all' | 'credits' | 'debits'>('all');
 
   const loadHistory = useCallback(async (email: string, q: string, limitNum: number) => {
     if (!email.trim()) { setHItems([]); return; }
@@ -153,18 +159,25 @@ export default function AdminScreen() {
     setGBalLoading(true);
     t = setTimeout(async () => {
       try {
-        const [bal] = await Promise.all([
-          getBalance(gEmail),
-        ]);
+        const bal = await getBalance(gEmail);
         setGBal(bal);
       } finally {
         setGBalLoading(false);
       }
-      // history fetch (no need to block balance)
+      // history fetch
       loadHistory(gEmail, hQ, limitNum);
     }, 300);
     return () => clearTimeout(t);
   }, [gEmail, hQ, hLimit, loadHistory]);
+
+  // display rows with chips applied
+  const displayRows = useMemo(() => {
+    let rows = [...hItems];
+    if (signFilter === 'credits') rows = rows.filter(r => r.delta > 0);
+    if (signFilter === 'debits') rows = rows.filter(r => r.delta < 0);
+    if (sortMode === 'oldest') rows = rows.slice().reverse(); // API returns newest first
+    return rows;
+  }, [hItems, sortMode, signFilter]);
 
   const gDeltaNum = useMemo(() => Number(gDelta) || 0, [gDelta]);
 
@@ -195,7 +208,6 @@ export default function AdminScreen() {
       await addEmail(gEmail);
       const bal = await getBalance(gEmail);
       setGBal(bal);
-      // refresh history immediately
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
       Alert.alert('Credits', `Deducted ${fmtDelta(-Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`);
@@ -257,6 +269,62 @@ export default function AdminScreen() {
   // Quick chips (cents) - positive only
   const chips = useMemo(() => ([100, 500, 1000, 2500, 5000]), []);
   const chipLabel = (c: number) => toDollars(c);
+
+  // Copy note
+  const copyNote = useCallback(async (note?: string | null) => {
+    if (!note) return;
+    try {
+      await Clipboard.setStringAsync(note);
+      Alert.alert('Copied', 'Note copied to clipboard.');
+    } catch {
+      Alert.alert('Copy failed', 'Could not copy note.');
+    }
+  }, []);
+
+  // CSV + email helpers
+  const buildCSV = useCallback((rows: HistRow[]) => {
+    const header = 'timestamp_iso,delta_cents,delta_dollars,note,balance_after_cents,balance_after_dollars';
+    const lines = rows.map(r => {
+      const iso = new Date(r.ts).toISOString();
+      const deltaC = Number(r.delta)||0;
+      const note = (r.note ?? '').toString().replace(/"/g,'""');
+      const balC = Number(r.balanceAfter)||0;
+      return [
+        `"${iso}"`,
+        `${deltaC}`,
+        `"${toDollars(deltaC)}"`,
+        `"${note}"`,
+        `${balC}`,
+        `"${toDollars(balC)}"`
+      ].join(',');
+    });
+    return [header, ...lines].join('\n');
+  }, []);
+
+  const emailBodySafe = (text: string) =>
+    encodeURIComponent(text).replace(/%0A/g, '%0D%0A'); // better newline rendering in mail clients
+
+  const handleEmailCSV = useCallback(() => {
+    if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email first.'); return; }
+    const csv = buildCSV(displayRows);
+    const subject = `Ball Skill credit history for ${gEmail.trim().toLowerCase()}`;
+    const body = emailBodySafe(csv);
+    const mailto = `mailto:${encodeURIComponent(gEmail.trim().toLowerCase())}?subject=${encodeURIComponent(subject)}&body=${body}`;
+    Linking.openURL(mailto).catch(() => Alert.alert('Email', 'Could not open mail app.'));
+  }, [gEmail, displayRows, buildCSV]);
+
+  const handleEmailNotes = useCallback(() => {
+    if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email first.'); return; }
+    const lines = displayRows.map(r => {
+      const when = new Date(r.ts).toLocaleString();
+      const sign = r.delta >= 0 ? '+' : '';
+      return `• ${when} — ${sign}${toDollars(r.delta)} — bal ${toDollars(r.balanceAfter)} — ${r.note ?? ''}`;
+    }).join('\n');
+    const subject = `Ball Skill credit notes for ${gEmail.trim().toLowerCase()}`;
+    const body = emailBodySafe(lines || 'No history.');
+    const mailto = `mailto:${encodeURIComponent(gEmail.trim().toLowerCase())}?subject=${encodeURIComponent(subject)}&body=${body}`;
+    Linking.openURL(mailto).catch(() => Alert.alert('Email', 'Could not open mail app.'));
+  }, [gEmail, displayRows]);
 
   return (
     <KeyboardAvoidingView
@@ -345,8 +413,38 @@ export default function AdminScreen() {
           </View>
 
           {/* History */}
-          <Text style={[s.meta, { marginTop: 12 }]}>History</Text>
-          <View style={{ flexDirection:'row', gap:8 }}>
+          <Text style={[s.cardTitle, { marginTop: 12 }]}>History</Text>
+
+          {/* Chips: sort/filter */}
+          <View style={s.chipRow}>
+            <TouchableOpacity
+              style={[s.drillChip, sortMode==='newest' && s.drillChipActive]}
+              onPress={() => setSortMode('newest')}
+            ><Text style={[s.drillChipText, sortMode==='newest' && s.drillChipTextActive]}>Newest</Text></TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.drillChip, sortMode==='oldest' && s.drillChipActive]}
+              onPress={() => setSortMode('oldest')}
+            ><Text style={[s.drillChipText, sortMode==='oldest' && s.drillChipTextActive]}>Oldest</Text></TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.drillChip, signFilter==='credits' && s.drillChipActive]}
+              onPress={() => setSignFilter('credits')}
+            ><Text style={[s.drillChipText, signFilter==='credits' && s.drillChipTextActive]}>Credits</Text></TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.drillChip, signFilter==='debits' && s.drillChipActive]}
+              onPress={() => setSignFilter('debits')}
+            ><Text style={[s.drillChipText, signFilter==='debits' && s.drillChipTextActive]}>Debits</Text></TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.drillChip, signFilter==='all' && s.drillChipActive]}
+              onPress={() => setSignFilter('all')}
+            ><Text style={[s.drillChipText, signFilter==='all' && s.drillChipTextActive]}>All</Text></TouchableOpacity>
+          </View>
+
+          {/* Search + Limit (with label) */}
+          <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
             <TextInput
               style={[s.input, { flex:1 }]}
               placeholder="search notes (optional)"
@@ -354,44 +452,66 @@ export default function AdminScreen() {
               value={hQ}
               onChangeText={setHQ}
             />
-            <TextInput
-              style={[s.input, { width:90, textAlign:'center' }]}
-              placeholder="limit"
-              placeholderTextColor={MUTED}
-              value={hLimit}
-              onChangeText={setHLimit}
-              keyboardType="number-pad"
-            />
+            <View style={{ width:110 }}>
+              <Text style={[s.meta, { marginBottom: -2 }]}>Limit</Text>
+              <TextInput
+                style={[s.input, { textAlign:'center', marginTop:4 }]}
+                placeholder="50"
+                placeholderTextColor={MUTED}
+                value={hLimit}
+                onChangeText={setHLimit}
+                keyboardType="number-pad"
+              />
+            </View>
           </View>
+
           <View style={s.historyBox}>
             {hLoading ? (
               <View style={{ padding:12, flexDirection:'row', alignItems:'center', gap:8 }}>
                 <ActivityIndicator color={ORANGE} />
                 <Text style={s.meta}>Loading history…</Text>
               </View>
-            ) : hItems.length === 0 ? (
+            ) : displayRows.length === 0 ? (
               <Text style={[s.meta, { padding:12 }]}>No history.</Text>
             ) : (
               <ScrollView style={s.historyScroll} nestedScrollEnabled>
-                {hItems.map((it, idx) => {
+                {displayRows.map((it, idx) => {
                   const color = it.delta >= 0 ? '#2ecc71' : '#ff4d4f';
                   const when = new Date(it.ts).toLocaleString();
+                  const hasNote = !!(it.note && it.note.length);
                   return (
                     <View key={idx} style={s.historyRow}>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
                         <Text style={[s.histDelta, { color }]}>{fmtDelta(it.delta)}</Text>
                         <Text style={s.histWhen}>{when}</Text>
                       </View>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4, alignItems:'center' }}>
                         <Text style={s.histBalance}>Balance: {toDollars(it.balanceAfter)}</Text>
-                        {it.note ? <Text style={s.histNote} numberOfLines={1}>{it.note}</Text> : null}
+                        {hasNote ? (
+                          <TouchableOpacity onPress={() => copyNote(it.note)} style={s.copyBtn}>
+                            <Text style={s.copyBtnText}>Copy</Text>
+                          </TouchableOpacity>
+                        ) : null}
                       </View>
+                      {hasNote ? (
+                        <Text style={[s.histNote, { marginTop:6 }]} numberOfLines={2}>{it.note}</Text>
+                      ) : null}
                     </View>
                   );
                 })}
                 <View style={{ height: 6 }} />
               </ScrollView>
             )}
+          </View>
+
+          {/* Export / Email */}
+          <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
+            <TouchableOpacity style={[s.btn, { flex:1 }]} onPress={handleEmailCSV}>
+              <Text style={s.btnText}>Email CSV</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.btnOutline, { flex:1 }]} onPress={handleEmailNotes}>
+              <Text style={s.btnOutlineText}>Email Notes</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -501,7 +621,7 @@ const s = StyleSheet.create({
   chip:{ backgroundColor:'#0b0b0b', borderColor:'#2a2a2a', borderWidth:1, paddingVertical:6, paddingHorizontal:10, borderRadius:999 },
   chipText:{ color:'#fff', fontWeight:'700', fontSize:12 },
 
-  // Drill chips (selected state)
+  // Drill chips (selected state) + history chips reusing same styles
   drillChip:{ backgroundColor:'#0b0b0b', borderColor:'#2a2a2a', borderWidth:1, paddingVertical:6, paddingHorizontal:10, borderRadius:999 },
   drillChipActive:{ backgroundColor: ORANGE, borderColor: ORANGE },
   drillChipText:{ color:'#fff', fontWeight:'700', fontSize:12 },
@@ -514,7 +634,10 @@ const s = StyleSheet.create({
   histDelta:{ fontWeight:'800', fontSize:13 },
   histWhen:{ color:MUTED, fontSize:11, marginLeft:8 },
   histBalance:{ color:'#fff', fontSize:12, fontWeight:'600' },
-  histNote:{ color:'#ddd', fontSize:12, marginLeft:8, maxWidth:'60%', textAlign:'right' },
+  histNote:{ color:'#ddd', fontSize:12, maxWidth:'100%' },
+
+  copyBtn:{ borderColor:'#444', borderWidth:1, paddingVertical:4, paddingHorizontal:8, borderRadius:8 },
+  copyBtnText:{ color:'#fff', fontSize:12, fontWeight:'700' },
 
   // Time inputs
   timeRow:{ flexDirection:'row', gap:8, marginTop:8 },
