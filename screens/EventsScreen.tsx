@@ -165,7 +165,7 @@ export default function EventsScreen() {
     try {
       const fee = Math.abs(Number(evt.fee) || 0);
       if (fee > 0) {
-        await api.grantCredits(userEmail, -fee, `join:${evt.id}`);
+        await api.grantCredits(userEmail, -(fee*100), `join:${evt.id}`);
       }
       await api.recordJoin(evt.id, userEmail);
       setJoinedMap(prev => ({ ...prev, [evt.id]: true }));
@@ -181,15 +181,15 @@ export default function EventsScreen() {
   // Chips header with API base badge
   const ChipsHeader = (
     <View style={s.chipsSticky}>
-      <View style={s.chipsRowTop}>
-      </View>
+      <View style={s.chipsRowTop} />
       <View style={s.chipsGroup}>
         <Chip label="All"        active={filter==='ALL'}        onPress={() => onSelectFilter('ALL')} />
         <Chip label="Soonest"    active={filter==='SOONEST'}    onPress={() => onSelectFilter('SOONEST')} />
         <Chip label="Newest"     active={filter==='NEWEST'}     onPress={() => onSelectFilter('NEWEST')} />
         <Chip label="In-Person"  active={filter==='IN_PERSON'}  onPress={() => onSelectFilter('IN_PERSON')} />
         <Chip label="Online"     active={filter==='ONLINE'}     onPress={() => onSelectFilter('ONLINE')} />
-        <Chip label="Joined"    active={filter==='JOINED'}    onPress={() => onSelectFilter('JOINED')} />        <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
+        <Chip label="Joined"    active={filter==='JOINED'}    onPress={() => onSelectFilter('JOINED')} />
+        <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
         <Chip label="Price ↓"    active={filter==='PRICE_DESC'} onPress={() => onSelectFilter('PRICE_DESC')} />
       </View>
     </View>
