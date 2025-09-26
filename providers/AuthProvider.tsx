@@ -1,61 +1,92 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import type { User } from 'firebase/auth';
-import { onAuthStateChanged, signInAnonymously, signOut } from 'firebase/auth';
-import { getAuthInstance, ensureFirebase } from '../services/firebase';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInAnonymously,
+  signOut as fbSignOut,
+  sendPasswordResetEmail,
+  updateProfile,
+  User,
+} from 'firebase/auth';
+import { getAuthInstance } from '../services/firebase';
 
 type Ctx = {
   user: User | null;
-  loading: boolean;
-  error: string | null;
-  signInAnon: () => Promise<void>;
+  isAdmin: boolean;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string) => Promise<void>;
+  signInGuest: () => Promise<void>;
   signOut: () => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
 };
 
 const AuthCtx = createContext<Ctx>({
   user: null,
-  loading: true,
-  error: null,
-  signInAnon: async () => {},
+  isAdmin: false,
+  signIn: async () => {},
+  signUp: async () => {},
+  signInGuest: async () => {},
   signOut: async () => {},
+  resetPassword: async () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  ensureFirebase();
   const auth = getAuthInstance();
-
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
-      setLoading(false);
+      console.log('[AuthProvider] onAuthStateChanged →', u ? (u.isAnonymous ? 'anonymous' : u.email) : 'null');
     });
     return () => unsub();
   }, [auth]);
 
-  const signInAnon = async () => {
-    setError(null);
-    try {
-      await signInAnonymously(auth);
-    } catch (e: any) {
-      // Anonymous must be enabled in Firebase Console → Auth → Sign-in method → Anonymous
-      setError(e?.message || 'Sign-in failed. Enable Anonymous in Firebase console.');
+  const signIn = async (email: string, password: string) => {
+    await signInWithEmailAndPassword(auth, email.trim(), password);
+  };
+
+  const signUp = async (email: string, password: string) => {
+    const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    if (cred.user && !cred.user.displayName) {
+      try { await updateProfile(cred.user, { displayName: email.split('@')[0] }); } catch {}
     }
   };
 
-  const signOutSafe = async () => {
-    setError(null);
-    try { await signOut(auth); }
-    catch (e: any) { setError(e?.message || 'Sign-out failed'); }
+  const signInGuest = async () => {
+    await signInAnonymously(auth);
   };
 
-  const value = useMemo(() => ({
-    user, loading, error, signInAnon, signOut: signOutSafe,
-  }), [user, loading, error]);
+  const signOut = async () => {
+    await fbSignOut(auth);
+  };
+
+  const resetPassword = async (email: string) => {
+    await sendPasswordResetEmail(auth, email.trim());
+  };
+
+  const isAdmin = useMemo(() => {
+    const e = user?.email?.toLowerCase() || '';
+    return e === 'admin@ballskill.com' || e === 'support@ballskill.com';
+  }, [user]);
+
+  const value: Ctx = {
+    user,
+    isAdmin,
+    signIn,
+    signUp,
+    signInGuest,
+    signOut,
+    resetPassword,
+  };
+
+  // DEBUG: prove signInGuest exists on every render
+  // (you can remove this after verifying)
+  console.log('[AuthProvider] value keys:', Object.keys(value));
+  console.log('[AuthProvider] typeof signInGuest =', typeof value.signInGuest);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
-export function useAuth() { return useContext(AuthCtx); }
+export const useAuth = () => useContext(AuthCtx);

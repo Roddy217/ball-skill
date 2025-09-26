@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, LayoutChangeEvent } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useAuth } from '../providers/AuthProvider';
 import { API_BASE_URL } from '../services/api';
 
@@ -12,47 +12,28 @@ export default function DashboardScreen() {
   const [busyGuest, setBusyGuest] = useState(false);
 
   useEffect(() => {
-    console.log('[Dashboard] mounted');
     const ping = async () => {
       try {
         const start = Date.now();
+        // server base (strip trailing /api)
         const base = API_BASE_URL.replace(/\/api$/, '');
-        console.log('[Dashboard] ping', `${base}/api/health`);
         const res = await fetch(`${base}/api/health`);
         const json = await res.json().catch(() => ({}));
         setLatency(Date.now() - start);
         setStatus(res.ok && json?.status === 'ok' ? 'ok' : 'down');
-        console.log('[Dashboard] ping result', { ok: res.ok, json, latency: Date.now() - start });
-      } catch (e) {
-        console.log('[Dashboard] ping error', e);
+      } catch {
         setStatus('down');
       }
     };
     ping();
   }, []);
 
-  useEffect(() => {
-    console.log('[Dashboard][Auth snapshot] user changed:', user);
-  }, [user]);
-
-  const onGuestLayout = (e: LayoutChangeEvent) => {
-    const { x, y, width, height } = e.nativeEvent.layout;
-    console.log('[Guest Login] mounted at', { x, y, width, height });
-  };
-
   const doGuest = async () => {
-    console.log('[Guest Login] Button pressed');
-    if (busyGuest) { console.log('[Guest Login] Ignored (busy)'); return; }
-    setBusyGuest(true);
     try {
-      console.log('[Guest Login] Attempting anonymous sign in…');
+      setBusyGuest(true);
       await signInGuest();
-      console.log('[Guest Login] Success — anonymous auth should now be active');
-    } catch (e) {
-      console.log('[Guest Login] ERROR', e);
     } finally {
       setBusyGuest(false);
-      console.log('[Guest Login] Done');
     }
   };
 
@@ -73,26 +54,17 @@ export default function DashboardScreen() {
         </Text>
       </View>
 
-      {/* Guest login only when not signed in with email */}
+      {/* Guest login only when signed out */}
       {!user?.email && (
-        <View style={s.card} onLayout={onGuestLayout} pointerEvents="auto">
+        <View style={s.card}>
           <Text style={s.cardTitle}>Quick test</Text>
           <Text style={s.meta}>Start a guest session (anonymous Firebase auth).</Text>
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPressIn={() => console.log('[Guest Login] onPressIn')}
-            onPressOut={() => console.log('[Guest Login] onPressOut')}
-            onPress={doGuest}
-            disabled={busyGuest}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            style={s.btnOutline}
-          >
+          <Pressable onPress={doGuest} disabled={busyGuest} style={s.btnOutline}>
             {busyGuest
               ? <ActivityIndicator color={ORANGE} />
               : <Text style={s.btnOutlineText}>Guest login</Text>
             }
-          </TouchableOpacity>
+          </Pressable>
         </View>
       )}
     </View>

@@ -1,0 +1,80 @@
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signInAnonymously,
+  sendPasswordResetEmail,
+  signOut,
+  User,
+} from 'firebase/auth';
+import { getAuthInstance, initFirebase } from '../services/firebase';
+
+type AuthCtx = {
+  user: User | null;
+  loading: boolean;
+  isAdmin: boolean;
+  signIn(email: string, password: string): Promise<void>;
+  signUp(email: string, password: string): Promise<void>;
+  signInAnon(): Promise<void>;
+  resetPassword(email: string): Promise<void>;
+  signOut(): Promise<void>;
+};
+
+const allowedAdmins = ['admin@ballskill.com','support@ballskill.com'];
+
+const Ctx = createContext<AuthCtx>({
+  user: null,
+  loading: true,
+  isAdmin: false,
+  signIn: async () => {},
+  signUp: async () => {},
+  signInAnon: async () => {},
+  resetPassword: async () => {},
+  signOut: async () => {},
+});
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    initFirebase();
+    const auth = getAuthInstance();
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const value = useMemo<AuthCtx>(() => ({
+    user,
+    loading,
+    isAdmin: !!(user?.email && allowedAdmins.includes(user.email.toLowerCase())),
+    async signIn(email, password) {
+      const auth = getAuthInstance();
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    },
+    async signUp(email, password) {
+      const auth = getAuthInstance();
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+    },
+    async signInAnon() {
+      const auth = getAuthInstance();
+      await signInAnonymously(auth);
+    },
+    async resetPassword(email) {
+      const auth = getAuthInstance();
+      await sendPasswordResetEmail(auth, email.trim());
+    },
+    async signOut() {
+      const auth = getAuthInstance();
+      await signOut(auth);
+    },
+  }), [user, loading]);
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useAuth() { return useContext(Ctx); }

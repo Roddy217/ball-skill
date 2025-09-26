@@ -1,10 +1,10 @@
+import HeaderSignOut from './components/HeaderSignOut';
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { AuthProvider, useAuth } from './providers/AuthProvider';
 import { Ionicons } from '@expo/vector-icons';
-import HeaderSignOut from './components/HeaderSignOut';
 
 const ORANGE = '#FF6600';
 
@@ -16,31 +16,29 @@ const ProfileScreen = require('./screens/ProfileScreen').default;
 const Tab = createBottomTabNavigator();
 
 function Tabs() {
-  const { isAdmin } = useAuth() as any; // safe if isAdmin exists; otherwise will be undefined
-
+  const { isAdmin } = useAuth();
   return (
     <Tab.Navigator
-      screenOptions={({ route }) => ({
-        headerShown: true,
-        headerRight: () => <HeaderSignOut />,
-        headerStyle: { backgroundColor: '#000' },
-        headerTintColor: '#fff',
-        tabBarActiveTintColor: ORANGE,
-        tabBarInactiveTintColor: '#888',
-        tabBarStyle: { backgroundColor: '#000', borderTopColor: '#222' },
-        tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
-        tabBarIcon: ({ focused, color, size }) => {
-          const map: Record<string, any> = {
-            Dashboard: focused ? 'grid' : 'grid-outline',
-            Events: focused ? 'trophy' : 'trophy-outline',
-            Profile: focused ? 'person' : 'person-outline',
-            Admin: focused ? 'settings' : 'settings-outline',
-          };
-          const name = map[route.name] || (focused ? 'ellipse' : 'ellipse-outline');
-          return <Ionicons name={name as any} size={size} color={color} />;
-        },
-      })}
-    >
+    screenOptions={({ route }) => ({
+  screenOptions={{ headerShown: true, headerRight: () => <HeaderSignOut /> }}
+      headerStyle: { backgroundColor: '#000' },
+      headerTintColor: '#fff',
+      tabBarActiveTintColor: '#FF6600',
+      tabBarInactiveTintColor: '#888',
+      tabBarStyle: { backgroundColor: '#000', borderTopColor: '#222' },
+      tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
+      tabBarIcon: ({ focused, color, size }) => {
+        const map: Record<string, string> = {
+          Dashboard: focused ? 'grid' : 'grid-outline',
+          Events: focused ? 'trophy' : 'trophy-outline',
+          Profile: focused ? 'person' : 'person-outline',
+          Admin: focused ? 'settings' : 'settings-outline',
+        };
+        const name = map[route.name] || (focused ? 'ellipse' : 'ellipse-outline');
+        return <Ionicons name={name as any} size={size} color={color} />;
+      },
+    })}
+  >
       <Tab.Screen name="Dashboard" component={DashboardScreen} />
       <Tab.Screen name="Events" component={EventsScreen} />
       {isAdmin && <Tab.Screen name="Admin" component={AdminScreen} />}

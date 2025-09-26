@@ -7,7 +7,7 @@ import {
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export const firebaseConfig = {
+const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
@@ -16,36 +16,31 @@ export const firebaseConfig = {
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
-let _app: FirebaseApp | null = null;
-let _auth: Auth | null = null;
+// helpful debug once on startup (masked key)
+if (__DEV__) {
+  const k = firebaseConfig.apiKey ? String(firebaseConfig.apiKey).slice(0,6) + '…' : 'MISSING';
+  console.log('Firebase cfg', k, firebaseConfig.projectId);
+}
 
-export function ensureFirebase() {
-  if (!_app) {
-    _app = getApps()[0] ?? initializeApp(firebaseConfig as any);
-    // Helpful masked log (remove later if noisy)
+let app: FirebaseApp | null = null;
+let authInstance: Auth | null = null;
+
+export function initFirebase() {
+  app = getApps().length ? getApps()[0]! : initializeApp(firebaseConfig as any);
+  if (!authInstance) {
     try {
-      const key = (firebaseConfig as any)?.apiKey as string | undefined;
-      const proj = (firebaseConfig as any)?.projectId as string | undefined;
-      // eslint-disable-next-line no-console
-      console.log('Firebase cfg',
-        key ? key.slice(0, 6) + '…' : 'MISSING',
-        proj || 'no-project'
-      );
-    } catch {}
-  }
-  if (!_auth) {
-    try {
-      _auth = initializeAuth(_app, {
+      authInstance = initializeAuth(app, {
         persistence: getReactNativePersistence(AsyncStorage),
       });
     } catch {
-      // If already initialized elsewhere
-      _auth = getAuthRaw(_app!);
+      // already initialized by another module
+      authInstance = getAuthRaw(app);
     }
   }
-  return { app: _app!, auth: _auth! };
+  return app!;
 }
 
 export function getAuthInstance(): Auth {
-  return ensureFirebase().auth;
+  if (!authInstance) initFirebase();
+  return authInstance!;
 }

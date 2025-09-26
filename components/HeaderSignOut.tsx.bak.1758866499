@@ -16,33 +16,28 @@ const ORANGE = '#FF6600';
 const BORDER = '#2a2a2a';
 
 export default function HeaderSignOut() {
-  const { user, signIn, signOut, signUp, resetPassword } = useAuth();
-  const signedIn = !!user;
+  const { user, signIn, signOut, resetPassword } = useAuth();
+  const signedIn = !!(user && user.email);
 
-  // modal state
+  // --- signed-out modal state ---
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<'signin'|'signup'>('signin');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const doPrimary = async () => {
+  const doSignIn = async () => {
     if (!email || !pw) {
       Alert.alert('Missing info', 'Enter email and password.');
       return;
     }
     setBusy(true);
     try {
-      if (mode === 'signin') {
-        await signIn(email.trim(), pw);
-      } else {
-        await signUp(email.trim(), pw);
-      }
+      await signIn(email.trim(), pw);
       setOpen(false);
       setEmail('');
       setPw('');
     } catch (e: any) {
-      Alert.alert(mode === 'signin' ? 'Sign in failed' : 'Sign up failed', e?.message || 'Try again');
+      Alert.alert('Sign in failed', e?.message || 'Could not sign in');
     } finally {
       setBusy(false);
     }
@@ -62,11 +57,11 @@ export default function HeaderSignOut() {
   };
 
   if (!signedIn) {
-    // Signed-out: show Sign in button + modal with Sign in / Sign up
+    // Signed-out: show Sign in button + lightweight modal
     return (
       <View style={{ marginRight: 12 }}>
         <Pressable
-          onPress={() => { setMode('signin'); setOpen(true); }}
+          onPress={() => setOpen(true)}
           hitSlop={8}
           style={({ pressed }) => ({
             paddingVertical: 6,
@@ -86,9 +81,7 @@ export default function HeaderSignOut() {
             style={{ flex:1, backgroundColor:'rgba(0,0,0,0.6)', justifyContent:'center', padding:20 }}
           >
             <View style={{ backgroundColor:'#0f0f10', borderRadius:12, borderColor:BORDER, borderWidth:1, padding:16 }}>
-              <Text style={{ color:'#fff', fontWeight:'900', fontSize:16, marginBottom:8 }}>
-                {mode === 'signin' ? 'Sign in' : 'Create account'}
-              </Text>
+              <Text style={{ color:'#fff', fontWeight:'900', fontSize:16, marginBottom:8 }}>Sign in</Text>
 
               <Text style={{ color:'#9a9a9a', fontSize:12, marginBottom:6 }}>Email</Text>
               <TextInput
@@ -121,39 +114,34 @@ export default function HeaderSignOut() {
                 editable={!busy}
               />
 
-              <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-                <Pressable onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')} disabled={busy} hitSlop={6}>
-                  <Text style={{ color: ORANGE, textDecorationLine:'underline', fontWeight:'800' }}>
-                    {mode === 'signin' ? 'Create account' : 'Have an account? Sign in'}
-                  </Text>
+              <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+                <Pressable onPress={doReset} disabled={busy} hitSlop={6}>
+                  <Text style={{ color:'#9a9a9a', textDecorationLine:'underline' }}>Forgot password</Text>
                 </Pressable>
 
-                {mode === 'signin' && (
-                  <Pressable onPress={doReset} disabled={busy} hitSlop={6}>
-                    <Text style={{ color:'#9a9a9a', textDecorationLine:'underline' }}>Forgot password</Text>
+                <View style={{ flexDirection:'row', gap:8 }}>
+                  <Pressable
+                    onPress={() => !busy && setOpen(false)}
+                    disabled={busy}
+                    style={{
+                      paddingVertical:8, paddingHorizontal:12, borderRadius:8,
+                      borderWidth:1, borderColor:BORDER,
+                    }}
+                  >
+                    <Text style={{ color:'#fff', fontWeight:'800' }}>Cancel</Text>
                   </Pressable>
-                )}
-              </View>
 
-              <View style={{ flexDirection:'row', justifyContent:'flex-end', gap:8 }}>
-                <Pressable
-                  onPress={() => !busy && setOpen(false)}
-                  disabled={busy}
-                  style={{ paddingVertical:8, paddingHorizontal:12, borderRadius:8, borderWidth:1, borderColor:BORDER }}
-                >
-                  <Text style={{ color:'#fff', fontWeight:'800' }}>Cancel</Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={doPrimary}
-                  disabled={busy}
-                  style={{ paddingVertical:8, paddingHorizontal:12, borderRadius:8, borderWidth:1, borderColor:ORANGE }}
-                >
-                  {busy
-                    ? <ActivityIndicator color={ORANGE} />
-                    : <Text style={{ color: ORANGE, fontWeight:'800' }}>{mode === 'signin' ? 'Sign in' : 'Create'}</Text>
-                  }
-                </Pressable>
+                  <Pressable
+                    onPress={doSignIn}
+                    disabled={busy}
+                    style={{
+                      paddingVertical:8, paddingHorizontal:12, borderRadius:8,
+                      borderWidth:1, borderColor:ORANGE,
+                    }}
+                  >
+                    {busy ? <ActivityIndicator color={ORANGE} /> : <Text style={{ color: ORANGE, fontWeight:'800' }}>Sign in</Text>}
+                  </Pressable>
+                </View>
               </View>
             </View>
           </KeyboardAvoidingView>
@@ -162,7 +150,7 @@ export default function HeaderSignOut() {
     );
   }
 
-  // Signed-in: Sign out button
+  // Signed-in state: Sign out button
   return (
     <View style={{ marginRight: 12 }}>
       <Pressable

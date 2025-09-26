@@ -1,0 +1,116 @@
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert } from 'react-native';
+import { useAuth } from '../providers/AuthProvider';
+
+const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
+
+export default function ProfileScreen() {
+  const { user, loading, isAdmin, signIn, signUp, signInAnon, resetPassword, signOut } = useAuth();
+  const [email, setEmail] = useState('test@ballskill.com');
+  const [password, setPassword] = useState('password123');
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <View style={{ flex:1, backgroundColor:'#000', padding:16 }}>
+      <Text style={s.h1}>Profile</Text>
+      <Text style={s.meta}>{loading ? 'Checking session…' : user ? 'Signed in' : 'Signed out'}</Text>
+
+      {!user ? (
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Sign in / Sign up</Text>
+          <TextInput
+            style={s.input}
+            value={email}
+            onChangeText={setEmail}
+            placeholder="email"
+            placeholderTextColor={MUTED}
+            autoCapitalize="none"
+            keyboardType="email-address"
+          />
+          <TextInput
+            style={s.input}
+            value={password}
+            onChangeText={setPassword}
+            placeholder="password"
+            placeholderTextColor={MUTED}
+            secureTextEntry
+          />
+
+          <View style={{ flexDirection:'row', gap:10 }}>
+            <TouchableOpacity
+              style={[s.btn, { flex:1 }]}
+              disabled={busy}
+              onPress={async () => {
+                setBusy(true);
+                try { await signIn(email, password); }
+                catch (e:any) { Alert.alert('Sign in failed', e?.message || String(e)); }
+                finally { setBusy(false); }
+              }}
+            ><Text style={s.btnText}>{busy ? '…' : 'Sign In'}</Text></TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.btnOutline, { flex:1 }]}
+              disabled={busy}
+              onPress={async () => {
+                setBusy(true);
+                try { await signUp(email, password); Alert.alert('Account created', 'You are signed in.'); }
+                catch (e:any) { Alert.alert('Sign up failed', e?.message || String(e)); }
+                finally { setBusy(false); }
+              }}
+            ><Text style={s.btnOutlineText}>{busy ? '…' : 'Sign Up'}</Text></TouchableOpacity>
+          </View>
+
+          <View style={{ flexDirection:'row', gap:10 }}>
+            <TouchableOpacity
+              style={[s.btnGhost, { flex:1 }]}
+              onPress={async () => {
+                if (!email.trim()) { Alert.alert('Missing email', 'Enter your email first.'); return; }
+                try { await resetPassword(email); Alert.alert('Password reset', 'Check your email for a reset link.'); }
+                catch (e:any) { Alert.alert('Reset failed', e?.message || String(e)); }
+              }}
+            ><Text style={s.btnGhostText}>Forgot Password</Text></TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.btnGhost, { flex:1 }]}
+              onPress={async () => {
+                try { await signInAnon(); }
+                catch (e:any) { Alert.alert('Guest sign-in failed', e?.message || String(e)); }
+              }}
+            ><Text style={s.btnGhostText}>Continue as Guest</Text></TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Account</Text>
+          <Text style={s.meta}>Email: <Text style={{color:'#fff'}}>{user.isAnonymous ? '(guest)' : user.email}</Text></Text>
+          <Text style={s.meta}>UID: <Text style={{color:'#fff'}} selectable>{user.uid}</Text></Text>
+          <Text style={[s.meta, { color: isAdmin ? '#2ecc71' : MUTED }]}>
+            Role: {isAdmin ? 'Admin' : 'User'}
+          </Text>
+
+          <TouchableOpacity
+            style={[s.btnOutline, { alignSelf:'flex-start' }]}
+            onPress={async () => {
+              try { await signOut(); }
+              catch (e:any) { Alert.alert('Sign out failed', e?.message || String(e)); }
+            }}
+          ><Text style={s.btnOutlineText}>Sign Out</Text></TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  h1:{ color:'#fff', fontSize:22, fontWeight:'800' },
+  meta:{ color:MUTED, marginTop:4, marginBottom:8 },
+  card:{ backgroundColor: CARD, borderColor: BORDER, borderWidth:1, borderRadius:14, padding:14, marginTop:12 },
+  cardTitle:{ color:'#fff', fontWeight:'800', fontSize:16, marginBottom:8 },
+  input:{ backgroundColor:'#090909', borderColor:'#1e1e1e', color:'#fff', borderWidth:1, borderRadius:10, paddingHorizontal:12, paddingVertical:10, marginTop:8 },
+  btn:{ backgroundColor: ORANGE, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:12 },
+  btnText:{ color:'#000', fontWeight:'800' },
+  btnOutline:{ borderColor: ORANGE, borderWidth:1.5, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:12 },
+  btnOutlineText:{ color: ORANGE, fontWeight:'800' },
+  btnGhost:{ borderColor:'#3a3a3a', borderWidth:1, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:12 },
+  btnGhostText:{ color:'#ddd', fontWeight:'700' },
+});

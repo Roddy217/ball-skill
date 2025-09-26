@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { View, Text, Pressable, StyleSheet, Platform, Alert, ToastAndroid } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import colors from '../theme/colors';
@@ -7,20 +7,18 @@ import colors from '../theme/colors';
 export default function IdChip({
   id,
   withCopy = true,
+  onCopied,
 }: {
   id: string;
   withCopy?: boolean;
+  onCopied?: () => void;
 }) {
   const copy = useCallback(async () => {
     try {
       await Clipboard.setStringAsync(id);
-      if (Platform.OS === 'android') {
-        ToastAndroid.show('Event ID copied', ToastAndroid.SHORT);
-      } else {
-        Alert.alert('Copied', 'Event ID copied to clipboard');
-      }
+      onCopied?.();
     } catch {}
-  }, [id]);
+  }, [id, onCopied]);
 
   return (
     <View style={s.wrap}>

@@ -3,10 +3,10 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, Activity
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
-import api, { getBalance, getUserJoins, grantCredits } from '../services/api';
+import { getBalance, getUserJoins, grantCredits, unrecordJoin } from '../services/api';
 import IdChip from '../components/IdChip';
 
-// --- Local catalog to hydrate IDs (until Firestore persistence) ---
+// --- Local catalog to hydrate IDs (mirrors Events screen) ---
 type CatalogEvent = {
   id: string;
   title: string;
@@ -16,6 +16,7 @@ type CatalogEvent = {
   venue?: string;
   fee: number;
 };
+
 const baseSeed: CatalogEvent[] = [
   { id: 'evt_001', title: 'Ball Skill Combine', date: 'Sat, Sep 20 • 10:00 AM', startTs: new Date('2025-09-20T10:00:00-04:00').getTime(), locationType: 'in_person', venue: 'Hoop City Gym', fee: 10 },
   { id: 'evt_002', title: 'Virtual Shooting Clinic', date: 'Sun, Sep 21 • 6:00 PM', startTs: new Date('2025-09-21T18:00:00-04:00').getTime(), locationType: 'online', fee: 10 },
@@ -63,7 +64,9 @@ export default function ProfileScreen() {
   const [query, setQuery] = useState<string>('');
 
   const hydrate = useCallback((ids: string[]): CatalogEvent[] => {
-    return ids.map(id => catMap.get(id)).filter(Boolean) as CatalogEvent[];
+    return ids
+      .map(id => catMap.get(id))
+      .filter(Boolean) as CatalogEvent[];
   }, []);
 
   const load = useCallback(async () => {
@@ -92,16 +95,22 @@ export default function ProfileScreen() {
 
   const rows = useMemo(() => {
     let events = hydrate(joinedIds);
+    // filter chips
     if (filter === 'IN_PERSON') events = events.filter(e => e.locationType === 'in_person');
     if (filter === 'ONLINE')    events = events.filter(e => e.locationType === 'online');
     if (filter === 'SOONEST')   events = [...events].sort((a, b) => a.startTs - b.startTs);
     if (filter === 'NEWEST')    events = [...events].sort((a, b) => b.startTs - a.startTs);
+    // query filter
     const q = query.trim().toLowerCase();
-    if (q) events = events.filter(e => e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q));
+    if (q) {
+      events = events.filter(e =>
+        e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q)
+      );
+    }
     return events;
   }, [joinedIds, filter, query, hydrate]);
 
-  const onUnjoin = useCallback((ev: CatalogEvent) => {
+  const onUnjoin = useCallback(async (ev: CatalogEvent) => {
     if (!hasEmail) return;
     Alert.alert(
       'Unjoin event',
@@ -113,10 +122,12 @@ export default function ProfileScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await grantCredits(email, ev.fee * 100, `unjoin:${ev.id}`); // refund in cents
-              await api.unrecordJoin(ev.id, email);                       // remove join
-              setJoinedIds(prev => prev.filter(id => id !== ev.id));      // remove from list
-              const b = await getBalance(email).catch(() => null);        // refresh balance
+              // Refund (cents) on client; then remove the join server-side
+              await grantCredits(email, ev.fee * 100, `unjoin:${ev.id}`);
+              await unrecordJoin(ev.id, email);
+              // Update local lists + balance
+              setJoinedIds(prev => prev.filter(id => id !== ev.id));
+              const b = await getBalance(email).catch(() => null);
               setBalance(b);
               Alert.alert('Unjoined', `Refunded $${ev.fee}.`);
             } catch (e: any) {
@@ -148,7 +159,9 @@ export default function ProfileScreen() {
       <View style={s.card}>
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
-          <Text style={s.balanceText}>{balance == null ? '—' : `$${balance}`}</Text>
+          <Text style={s.balanceText}>
+            {balance == null ? '—' : `$${balance}`}
+          </Text>
           <Pressable onPress={load} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
             <Text style={s.refreshText}>Refresh</Text>
           </Pressable>
@@ -156,7 +169,7 @@ export default function ProfileScreen() {
         {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
       </View>
 
-      {/* Joined Events */}
+      {/* Joined Events — controls */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Joined Events</Text>
 
@@ -191,9 +204,8 @@ export default function ProfileScreen() {
                   <Text style={s.evMeta}>
                     {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
                   </Text>
-                  <View style={s.idRow}>
-                    <IdChip id={ev.id} withCopy />
-                    <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+                  <View style={{ marginTop: 6 }}>
+                    <IdChip id={ev.id} />
                   </View>
                 </View>
                 <Pressable onPress={() => onUnjoin(ev)} style={({ pressed }) => [s.unBtn, pressed && { opacity: 0.85 }]}>
@@ -234,7 +246,10 @@ const s = StyleSheet.create({
 
   balanceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   balanceText: { color: colors.TEXT, fontSize: 28, fontWeight: '900' },
-  refreshBtn: { backgroundColor: colors.ORANGE, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12 },
+  refreshBtn: {
+    backgroundColor: colors.ORANGE, borderRadius: 10,
+    paddingVertical: 8, paddingHorizontal: 12,
+  },
   refreshText: { color: colors.WHITE, fontWeight: '800' },
   hint: { color: colors.MUTED_TEXT },
 
@@ -277,17 +292,13 @@ const s = StyleSheet.create({
   evTitle: { color: colors.TEXT, fontSize: 16, fontWeight: '800' },
   evMeta: { color: colors.MUTED_TEXT, fontSize: 12, marginTop: 2 },
 
-  idRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 10 },
-  createdText: { color: colors.MUTED_TEXT, fontSize: 11 },
-
-  // orange outline Unjoin
   unBtn: {
-    borderColor: colors.ORANGE,
+    backgroundColor: '#303035',
+    borderColor: colors.BORDER,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 12,
-    backgroundColor: 'transparent'
   },
-  unBtnText: { color: colors.ORANGE, fontWeight: '800' },
+  unBtnText: { color: colors.WHITE, fontWeight: '800' },
 });
