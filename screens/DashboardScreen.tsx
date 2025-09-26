@@ -1,46 +1,70 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useAuth } from '../providers/AuthProvider';
+import { API_BASE_URL } from '../services/api';
 
-const ORANGE = '#FF6600', MUTED = '#9a9a9a', CARD = '#111', BORDER = '#2a2a2a';
+const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
 
 export default function DashboardScreen() {
-  const nav = useNavigation<any>();
-  const { user, isAdmin } = useAuth();
+  const { user, signInGuest } = useAuth();
+  const [status, setStatus] = useState<'checking'|'ok'|'down'>('checking');
+  const [latency, setLatency] = useState<number | null>(null);
+  const [busyGuest, setBusyGuest] = useState(false);
+
+  useEffect(() => {
+    const ping = async () => {
+      try {
+        const start = Date.now();
+        // server base (strip trailing /api)
+        const base = API_BASE_URL.replace(/\/api$/, '');
+        const res = await fetch(`${base}/api/health`);
+        const json = await res.json().catch(() => ({}));
+        setLatency(Date.now() - start);
+        setStatus(res.ok && json?.status === 'ok' ? 'ok' : 'down');
+      } catch {
+        setStatus('down');
+      }
+    };
+    ping();
+  }, []);
+
+  const doGuest = async () => {
+    try {
+      setBusyGuest(true);
+      await signInGuest();
+    } finally {
+      setBusyGuest(false);
+    }
+  };
 
   return (
     <View style={{ flex:1, backgroundColor:'#000', padding:16 }}>
       <Text style={s.h1}>Dashboard</Text>
-      {user ? (
+      <Text style={s.sub}>
+        {user?.email ? `Signed in as ${user.email}` : (user ? 'Guest session' : 'Signed out')}
+      </Text>
+
+      {/* Server status card */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Server status</Text>
+        <Text style={s.meta}>
+          {status === 'checking' && 'Checking…'}
+          {status === 'ok' && `ok${latency != null ? ` • ${latency}ms` : ''}`}
+          {status === 'down' && 'down'}
+        </Text>
+      </View>
+
+      {/* Guest login only when signed out */}
+      {!user?.email && (
         <View style={s.card}>
-          <Text style={s.title}>Welcome back</Text>
-          <Text style={s.meta}>Signed in as <Text style={{color:'#fff'}}>{user.isAnonymous ? '(guest)' : user.email}</Text></Text>
-          <View style={{ flexDirection:'row', gap:10 }}>
-            <TouchableOpacity style={[s.btn, { flex:1 }]} onPress={() => nav.navigate('Events')}>
-              <Text style={s.btnText}>Browse Events</Text>
-            </TouchableOpacity>
-            {isAdmin ? (
-              <TouchableOpacity style={[s.btnOutline, { flex:1 }]} onPress={() => nav.navigate('Admin')}>
-                <Text style={s.btnOutlineText}>Go to Admin</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={[s.btnOutline, { flex:1 }]} onPress={() => nav.navigate('Profile')}>
-                <Text style={s.btnOutlineText}>Profile</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      ) : (
-        <View style={s.card}>
-          <Text style={s.title}>Welcome</Text>
-          <Text style={s.meta}>Sign in to join events, track results, and manage credits.</Text>
-          <TouchableOpacity style={s.btn} onPress={() => nav.navigate('Profile')}>
-            <Text style={s.btnText}>Sign in / Create account</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.btnGhost} onPress={() => nav.navigate('Profile')}>
-            <Text style={s.btnGhostText}>Continue as Guest (on Profile)</Text>
-          </TouchableOpacity>
+          <Text style={s.cardTitle}>Quick test</Text>
+          <Text style={s.meta}>Start a guest session (anonymous Firebase auth).</Text>
+          <Pressable onPress={doGuest} disabled={busyGuest} style={s.btnOutline}>
+            {busyGuest
+              ? <ActivityIndicator color={ORANGE} />
+              : <Text style={s.btnOutlineText}>Guest login</Text>
+            }
+          </Pressable>
         </View>
       )}
     </View>
@@ -49,13 +73,10 @@ export default function DashboardScreen() {
 
 const s = StyleSheet.create({
   h1:{ color:'#fff', fontSize:22, fontWeight:'800' },
+  sub:{ color:MUTED, marginTop:4, marginBottom:14 },
   card:{ backgroundColor: CARD, borderColor: BORDER, borderWidth:1, borderRadius:14, padding:14, marginTop:12 },
-  title:{ color:'#fff', fontWeight:'800', fontSize:16, marginBottom:6 },
-  meta:{ color:MUTED, marginBottom:8 },
-  btn:{ backgroundColor: ORANGE, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:8 },
-  btnText:{ color:'#000', fontWeight:'800' },
-  btnOutline:{ borderColor: ORANGE, borderWidth:1.5, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:8 },
-  btnOutlineText:{ color: ORANGE, fontWeight:'800' },
-  btnGhost:{ borderColor:'#3a3a3a', borderWidth:1, borderRadius:12, paddingVertical:12, alignItems:'center', marginTop:8 },
-  btnGhostText:{ color:'#ddd', fontWeight:'700' },
+  cardTitle:{ color:'#fff', fontWeight:'800', fontSize:16 },
+  meta:{ color:MUTED, fontSize:12, marginTop:2 },
+  btnOutline:{ marginTop:12, alignSelf:'flex-start', borderRadius:10, borderWidth:1, borderColor:ORANGE, paddingVertical:10, paddingHorizontal:14 },
+  btnOutlineText:{ color:ORANGE, fontWeight:'800' },
 });
