@@ -19,6 +19,15 @@ export default function attachJoins(app) {
     app.locals.joinsByEmail.get(email).add(eventId);
     app.locals.joinsByEvent.get(eventId).add(email);
   }
+  function removeJoin(rawEmail, rawEventId) {
+    const email = String(rawEmail || '').toLowerCase().trim();
+    const eventId = String(rawEventId || '').trim();
+    if (!email || !eventId) return;
+    const byEmail = app.locals.joinsByEmail.get(email);
+    const byEvent = app.locals.joinsByEvent.get(eventId);
+    if (byEmail) { byEmail.delete(eventId); if (byEmail.size === 0) app.locals.joinsByEmail.delete(email); }
+    if (byEvent) { byEvent.delete(email); if (byEvent.size === 0) app.locals.joinsByEvent.delete(eventId); }
+  }
 
   // POST /api/events/:id/join — record a join
   router.post('/api/events/:id/join', (req, res) => {
@@ -30,6 +39,19 @@ export default function attachJoins(app) {
     const { email } = req.body || {};
     if (!email) return res.status(400).json({ error: 'email required' });
     addJoin(email, req.params.id);
+    return res.json({ success: true });
+  });
+
+  // DELETE /api/events/:id/join — remove a join
+  router.delete('/api/events/:id/join', (req, res) => {
+    console.log('[joins] DELETE /api/events/:id/join', {
+      id: req.params.id,
+      contentType: req.headers['content-type'],
+      body: req.body,
+    });
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'email required' });
+    removeJoin(email, req.params.id);
     return res.json({ success: true });
   });
 
