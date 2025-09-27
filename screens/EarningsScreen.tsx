@@ -1,12 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Alert, Linking } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { getBalance, getConnectStatus, startConnectOnboarding } from '../services/api';
 import { useAuth } from '../providers/AuthProvider';
 
 export default function EarningsScreen() {
   const { user } = useAuth();
-  const email = (user?.email || 'demo@ballskill.app').toLowerCase();
+  const hasEmail = !!(user && !user.isAnonymous && user.email);
+  const email = hasEmail ? String(user.email).toLowerCase() : '';
 
   const [loading, setLoading] = useState(true);
   const [balance, setBalance] = useState<number | null>(null);
@@ -15,6 +17,12 @@ export default function EarningsScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      if (!email) {
+        // Not signed in with email — clear values and stop loading
+        setBalance(null);
+        setStatus({ has: false, payouts: false, acct: undefined, due: [] });
+        return;
+      }
       const [bal, st] = await Promise.all([getBalance(email), getConnectStatus(email)]);
       setBalance(bal);
       setStatus({
@@ -23,14 +31,20 @@ export default function EarningsScreen() {
         acct: st?.accountId,
         due: st?.requirements_due || [],
       });
+    } catch (e) {
+      Alert.alert('Earnings error', (e as any)?.message || 'Failed to load earnings');
     } finally {
       setLoading(false);
     }
   }, [email]);
 
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const onSetup = async () => {
+    if (!hasEmail) {
+      Alert.alert('Sign in required', 'Sign in with email to set up payouts.');
+      return;
+    }
     const ret = await startConnectOnboarding(
       email,
       'https://dashboard.stripe.com/',
@@ -52,6 +66,8 @@ export default function EarningsScreen() {
     }
   };
 
+  const dollars = balance != null ? (balance / 100).toFixed(2) : null;
+
   return (
     <View style={s.container}>
       <Text style={s.h1}>Earnings</Text>
@@ -68,7 +84,13 @@ export default function EarningsScreen() {
 
       <View style={s.card}>
         <Text style={s.label}>Balance</Text>
-        {loading ? <ActivityIndicator /> : <Text style={s.balance}>{balance === null ? '—' : `${balance} credits`}</Text>}
+        {loading ? (
+          <ActivityIndicator />
+        ) : (
+          <Text style={s.balance}>
+            {balance == null ? '—' : `${balance} credits${dollars ? ` ($${dollars})` : ''}`}
+          </Text>
+        )}
       </View>
 
       <View style={s.card}>

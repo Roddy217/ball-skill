@@ -6,6 +6,20 @@ import { useAuth } from '../providers/AuthProvider';
 import api, { getBalance, getUserJoins, grantCredits } from '../services/api';
 import IdChip from '../components/IdChip';
 
+async function normalizeJoins(email: string) {
+  try {
+    const raw = await getUserJoins(email);
+    console.log('[Profile][joins] raw =', raw);
+    if (Array.isArray(raw)) return raw;
+    if (raw && Array.isArray((raw as any).joins)) return (raw as any).joins;
+    if (raw && Array.isArray((raw as any).events)) return (raw as any).events;
+    return [];
+  } catch (e) {
+    console.log('[Profile][joins] error', e);
+    return [];
+  }
+}
+
 // --- Local catalog to hydrate IDs (until Firestore persistence) ---
 type CatalogEvent = {
   id: string;
@@ -55,9 +69,16 @@ export default function ProfileScreen() {
   const hasEmail = !!(user && !user.isAnonymous && user.email);
 
   const [loading, setLoading] = useState(false);
-  const [balance, setBalance] = useState<string | null>(null);
+  const [balanceCents, setBalanceCents] = useState<number | null>(null);
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+
+  // STEP3: balance-only loading flag
+  const [balLoading, setBalLoading] = useState(false);
+  const balanceDollars = useMemo(
+    () => (balanceCents != null ? (balanceCents / 100).toFixed(2) : null),
+    [balanceCents]
+  );
 
   const [filter, setFilter] = useState<JoinFilter>('SOONEST');
   const [query, setQuery] = useState<string>('');
@@ -68,7 +89,7 @@ export default function ProfileScreen() {
 
   const load = useCallback(async () => {
     if (!hasEmail) {
-      setBalance(null);
+      setBalanceCents(null);
       setJoinedIds([]);
       return;
     }
@@ -76,9 +97,9 @@ export default function ProfileScreen() {
     try {
       const [b, j] = await Promise.all([
         getBalance(email).catch(() => null),
-        getUserJoins(email).then(r => Array.isArray(r.joins) ? r.joins : []).catch(() => []),
+        normalizeJoins(email),
       ]);
-      setBalance(b);
+      setBalanceCents(b as any);
       setJoinedIds(j);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to load profile');
@@ -87,8 +108,31 @@ export default function ProfileScreen() {
     }
   }, [email, hasEmail]);
 
+  // STEP3: Fetch balance only (separate from joined events)
+  const loadBalanceOnly = useCallback(async () => {
+    if (!hasEmail) {
+      setBalanceCents(null);
+      return;
+    }
+    try {
+      setBalLoading(true);
+      console.log('[Profile][Balance] fetching for:', email);
+      const b = await getBalance(email);
+      console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
+      setBalanceCents(b as any);
+    } catch (e: any) {
+      console.log('[Profile][Balance] error:', e?.message || e);
+      Alert.alert('Error', e?.message || 'Failed to fetch balance');
+    } finally {
+      setBalLoading(false);
+    }
+  }, [email, hasEmail]);
+
   useEffect(() => { load(); }, [load]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    load();
+    loadBalanceOnly(); // STEP3: also pull fresh balance on focus
+  }, [load, loadBalanceOnly]));
 
   const rows = useMemo(() => {
     let events = hydrate(joinedIds);
@@ -117,7 +161,7 @@ export default function ProfileScreen() {
               await api.unrecordJoin(ev.id, email);                       // remove join
               setJoinedIds(prev => prev.filter(id => id !== ev.id));      // remove from list
               const b = await getBalance(email).catch(() => null);        // refresh balance
-              setBalance(b);
+              setBalanceCents(b as any);
               Alert.alert('Unjoined', `Refunded $${ev.fee}.`);
             } catch (e: any) {
               Alert.alert('Failed', e?.message || 'Could not unjoin');
@@ -144,14 +188,17 @@ export default function ProfileScreen() {
         {hasEmail ? `Signed in as ${email}` : 'Signed out — sign in to join events and manage balance.'}
       </Text>
 
+
       {/* Balance Card */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
-          <Text style={s.balanceText}>{balance == null ? '—' : `$${balance}`}</Text>
-          <Pressable onPress={load} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
-            <Text style={s.refreshText}>Refresh</Text>
-          </Pressable>
+        <Text style={s.balanceText}>
+          {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `$${balanceDollars}`)}
+        </Text>
+        <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+          <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
+        </Pressable>
         </View>
         {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
       </View>

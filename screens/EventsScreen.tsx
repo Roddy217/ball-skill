@@ -57,13 +57,14 @@ function generateEvent(idx: number): EventItem {
 }
 
 export default function EventsScreen() {
+  
+  const { user } = useAuth();
+  const email = (user?.email || '').toLowerCase();
+  const hasEmail = !!(user && !user.isAnonymous && user.email);
+  const userEmail = email; // ensure the variable used below actually exists
   const [filter, setFilter] = useState<SortFilter>('SOONEST');
   const [apiBase, setApiBaseState] = useState<string>('');
-  const [balance, setBalance] = useState<string | null>(null);
-
-  const { user } = useAuth();
-  const userEmail = (user?.email || '').toLowerCase();
-  const hasEmail = !!(user && !user.isAnonymous && user.email);
+  const [balance, setBalance] = useState<string | null>(null)
 
   const [pool, setPool] = useState<EventItem[]>(() => {
     const first: EventItem[] = [...baseSeed];
@@ -140,8 +141,10 @@ export default function EventsScreen() {
       for (const evt of visibleRows) {
         if (joinedMap[evt.id] !== undefined) continue;
         try {
-          const joined = await getRegistrationStatus(evt.id, userEmail);
-          if (!cancelled) setJoinedMap(prev => ({ ...prev, [evt.id]: joined }));
+        const { registered } = await getRegistrationStatus(evt.id, userEmail);
+        if (!cancelled) {
+          setJoinedMap(prev => ({ ...prev, [evt.id]: !!registered }));
+        }
         } catch {}
       }
     })();
@@ -149,15 +152,10 @@ export default function EventsScreen() {
   }, [visibleRows, userEmail, joinedMap]);
 
   const onJoin = async (evt: EventItem) => {
+    // guard: don't re-enter and don't auto-join when already joined
+    if (joiningMap[evt.id] || joinedMap[evt.id]) return;
     if (!hasEmail) {
       Alert.alert('Sign in', 'Please sign in on the Profile tab to join this event.');
-      return;
-    }
-    if (joiningMap[evt.id]) return;
-
-    // If already joined, surface the info (no extra charge)
-    if (joinedMap[evt.id]) {
-      Alert.alert('Already joined', 'You are already registered for this event.');
       return;
     }
 
@@ -165,12 +163,17 @@ export default function EventsScreen() {
     try {
       const fee = Math.abs(Number(evt.fee) || 0);
       if (fee > 0) {
-        await api.grantCredits(userEmail, -(fee*100), `join:${evt.id}`);
+        await api.grantCredits(userEmail, -(fee * 100), `join:${evt.id}`);
       }
       await api.recordJoin(evt.id, userEmail);
+
+      // mark as joined locally
       setJoinedMap(prev => ({ ...prev, [evt.id]: true }));
-      const bal = await getBalance(userEmail);
-      Alert.alert('Joined', `Fee: ${fee}\nNew balance: ${bal ?? '—'}`);
+
+      // fetch and show new balance (convert cents→dollars if needed)
+      const cents = await getBalance(userEmail);
+      const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
+      Alert.alert('Joined', `Fee: $${fee}\nNew balance: $${dollars}`);
     } catch (e: any) {
       Alert.alert('Join failed', e?.message || 'Unknown error');
     } finally {
@@ -179,6 +182,51 @@ export default function EventsScreen() {
   };
 
   // Chips header with API base badge
+  const onUnjoin = async (evt: EventItem) => {
+    if (!hasEmail) {
+      Alert.alert('Sign in', 'Please sign in on the Profile tab to unjoin this event.');
+      return;
+    }
+    if (joiningMap[evt.id]) return;
+
+    Alert.alert(
+      'Unjoin event',
+      `Refund $${Math.abs(Number(evt.fee) || 0)} for "${evt.title}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unjoin',
+          style: 'destructive',
+          onPress: async () => {
+            setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
+            try {
+              // remove join on server
+              await api.unrecordJoin(evt.id, userEmail);
+
+              // refund credits (cents)
+              const fee = Math.abs(Number(evt.fee) || 0);
+              if (fee > 0) {
+                await api.grantCredits(userEmail, fee * 100, `unjoin:${evt.id}`);
+              }
+
+              // update local state
+              setJoinedMap(prev => ({ ...prev, [evt.id]: false }));
+
+              // show new balance
+              const cents = await getBalance(userEmail);
+              const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
+              Alert.alert('Unjoined', `Refund: $${fee}\nNew balance: $${dollars}`);
+              console.log('[Events][Unjoin] new balance for', userEmail, '→', dollars);
+            } catch (e: any) {
+              Alert.alert('Unjoin failed', e?.message || 'Unknown error');
+            } finally {
+              setJoiningMap(prev => ({ ...prev, [evt.id]: false }));
+            }
+          },
+        },
+      ],
+    );
+  };
   const ChipsHeader = (
     <View style={s.chipsSticky}>
       <View style={s.chipsRowTop} />
@@ -207,7 +255,7 @@ export default function EventsScreen() {
             item={item}
             joined={!!joinedMap[item.id]}
             joining={!!joiningMap[item.id]}
-            onJoin={() => onJoin(item)}
+            onJoin={() => (joinedMap[item.id] ? onUnjoin(item) : onJoin(item))}
           />
         )}
         ListHeaderComponent={ChipsHeader}
