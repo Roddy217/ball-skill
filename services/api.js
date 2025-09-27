@@ -115,18 +115,30 @@ class ApiService {
   }
 
   // Compatibility: derive "registration status" from joins list
-  async getRegistrationStatus(email, eventId) {
-    if (!email || !eventId) return { registered: false };
-    try {
-      const joins = await this.getUserJoins(email);
-      const found = Array.isArray(joins)
-        ? joins.some((j) => (j?.eventId || j?.id) === eventId)
-        : false;
-      return { registered: !!found };
-    } catch {
-      return { registered: false };
-    }
+async getRegistrationStatus(a, b) {
+  // Tolerate callers that accidentally swap args
+  const looksEmail = (x) => typeof x === 'string' && x.includes('@');
+
+  const email   = looksEmail(a) ? a : (looksEmail(b) ? b : a);
+  const eventId = looksEmail(a) ? b : (looksEmail(b) ? a : b);
+
+  if (!email || !eventId) return { registered: false };
+
+  // (Optional) debug
+  if (!looksEmail(a) && looksEmail(b)) {
+    console.log('[api.getRegistrationStatus] swapped args detected; corrected order.');
   }
+
+  try {
+    const joins = await this.getUserJoins(email);
+    const found = Array.isArray(joins)
+      ? joins.some((j) => (j?.eventId || j?.id) === eventId)
+      : false;
+    return { registered: !!found };
+  } catch {
+    return { registered: false };
+  }
+}
 
   /* --------------- Credits --------------- */
 

@@ -2,6 +2,7 @@ import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
+import { loadJoinedMap, saveJoinedMap, updateJoined } from '../utils/joinState';
 import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
@@ -77,6 +78,22 @@ export default function EventsScreen() {
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
 
   const [joinedMap, setJoinedMap] = useState<Record<string, boolean>>({});
+  // Keep "joined" UI state stable across tab switches (per-device only)
+  useFocusEffect(
+    React.useCallback(() => {
+      const email = (user?.email || '').toLowerCase();
+      if (!email) {
+        setJoinedMap({});
+        return;
+      }
+      let cancelled = false;
+      (async () => {
+        const cached = await loadJoinedMap(email);
+        if (!cancelled) setJoinedMap(cached || {});
+      })();
+      return () => { cancelled = true; };
+    }, [user?.email])
+  );
   const [joiningMap, setJoiningMap] = useState<Record<string, boolean>>({});
 
   const ensurePoolSize = useCallback((targetSize: number) => {

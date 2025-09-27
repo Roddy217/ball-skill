@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, ActivityIndicator, Alert, TextInput } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
+import { loadJoinedMap } from '../utils/joinState';
 import { useAuth } from '../providers/AuthProvider';
 import api, { getBalance, getUserJoins, grantCredits } from '../services/api';
 import IdChip from '../components/IdChip';
@@ -10,13 +11,51 @@ async function normalizeJoins(email: string) {
   try {
     const raw = await getUserJoins(email);
     console.log('[Profile][joins] raw =', raw);
-    if (Array.isArray(raw)) return raw;
-    if (raw && Array.isArray((raw as any).joins)) return (raw as any).joins;
-    if (raw && Array.isArray((raw as any).events)) return (raw as any).events;
-    return [];
+
+    // 1) Try API shapes
+    const arr: any[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as any)?.joins)
+        ? (raw as any).joins
+        : Array.isArray((raw as any)?.events)
+          ? (raw as any).events
+          : [];
+
+    let ids: string[] = arr
+      .map((x) => (typeof x === 'string' ? x : (x?.eventId || x?.id || null)))
+      .filter((v): v is string => !!v);
+
+    // 2) Fallback to local persisted join map if API gave us nothing
+    if (!ids.length) {
+      try {
+        const local = await loadJoinedMap(email);
+        const fromLocal =
+          local && typeof local === 'object'
+            ? Object.keys(local).filter((k) => !!(local as any)[k])
+            : [];
+        console.log('[Profile][joins][fallback local] ids =', fromLocal);
+        ids = fromLocal;
+      } catch (e) {
+        console.log('[Profile][joins][fallback local] error', e);
+      }
+    }
+
+    console.log('[Profile][joins] ids =', ids);
+    return ids;
   } catch (e) {
     console.log('[Profile][joins] error', e);
-    return [];
+    // 3) Fallback on error as well
+    try {
+      const local = await loadJoinedMap(email);
+      const fromLocal =
+        local && typeof local === 'object'
+          ? Object.keys(local).filter((k) => !!(local as any)[k])
+          : [];
+      console.log('[Profile][joins][fallback on error] ids =', fromLocal);
+      return fromLocal;
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -75,6 +114,7 @@ export default function ProfileScreen() {
 
   // STEP3: balance-only loading flag
   const [balLoading, setBalLoading] = useState(false);
+  const [joinsLoading, setJoinsLoading] = useState(false);
   const balanceDollars = useMemo(
     () => (balanceCents != null ? (balanceCents / 100).toFixed(2) : null),
     [balanceCents]
@@ -94,6 +134,7 @@ export default function ProfileScreen() {
       return;
     }
     setLoading(true);
+    setJoinsLoading(true);
     try {
       const [b, j] = await Promise.all([
         getBalance(email).catch(() => null),
@@ -105,6 +146,7 @@ export default function ProfileScreen() {
       Alert.alert('Error', e?.message || 'Failed to load profile');
     } finally {
       setLoading(false);
+      setJoinsLoading(false);
     }
   }, [email, hasEmail]);
 
@@ -223,7 +265,7 @@ export default function ProfileScreen() {
           style={s.searchInput}
         />
 
-        {loading ? (
+        {joinsLoading ? (
           <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
         ) : !hasEmail ? (
           <Text style={s.hint}>Sign in to view and manage your joined events.</Text>
