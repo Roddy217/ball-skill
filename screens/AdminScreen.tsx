@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Pressable,
   Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Linking
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import { useFocusEffect } from '@react-navigation/native';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
 import { useAuth } from '../providers/AuthProvider';
@@ -85,6 +86,26 @@ const DEFAULT_DRILLS = ['FT','3PT'];
 
 export default function AdminScreen() {
   const { user } = useAuth();
+  // --- Admin balance quick chip ---
+const [adminBalCents, setAdminBalCents] = useState<number | null>(null);
+const [balRefreshing, setBalRefreshing] = useState(false);
+
+const refreshMyBalance = useCallback(async () => {
+  try {
+    const email = user?.email?.toLowerCase();
+    if (!email) {
+      Alert.alert('Not signed in', 'Sign in to refresh your balance.');
+      return;
+    }
+    setBalRefreshing(true);
+    const cents = await getBalance(email);
+    setAdminBalCents(typeof cents === 'number' ? cents : Number(cents) || 0);
+  } catch (e: any) {
+    Alert.alert('Balance', e?.message || 'Failed to refresh.');
+  } finally {
+    setBalRefreshing(false);
+  }
+}, [user?.email]);
   const email = user?.email?.toLowerCase() || '';
   const adminAllowed = email === 'admin@ballskill.com' || email === 'support@ballskill.com';
   if (!adminAllowed) {
@@ -97,6 +118,7 @@ export default function AdminScreen() {
       </View>
     );
   }
+  
   // Events cache for dynamic drills
   const [events, setEvents] = useState<EventRow[]>([]);
   const [evLoading, setEvLoading] = useState(false);
@@ -203,6 +225,8 @@ export default function AdminScreen() {
       await addEmail(gEmail);
       const bal = await getBalance(gEmail);
       setGBal(bal);
+      await refreshGBal();
+      setGNote('');
       // refresh history immediately
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
@@ -212,7 +236,7 @@ export default function AdminScreen() {
     } finally {
       setGBusy(false);
     }
-  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory]);
+  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory, refreshGBal]);
 
   const doDeduct = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
@@ -222,6 +246,8 @@ export default function AdminScreen() {
       await addEmail(gEmail);
       const bal = await getBalance(gEmail);
       setGBal(bal);
+      await refreshGBal();
+      setGNote('');
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
       Alert.alert('Credits', `Deducted ${fmtDelta(-Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`);
@@ -230,7 +256,28 @@ export default function AdminScreen() {
     } finally {
       setGBusy(false);
     }
-  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory]);
+  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory, refreshGBal]);
+
+  const refreshGBal = useCallback(async () => {
+    if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
+    setGBalLoading(true);
+    try {
+      const bal = await getBalance(gEmail);
+      setGBal(bal);
+    } catch (e: any) {
+      Alert.alert('Balance', String(e?.message || 'Failed to refresh.'));
+    } finally {
+      setGBalLoading(false);
+    }
+  }, [gEmail]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (gEmail.trim()) {
+        refreshGBal();
+      }
+    }, [gEmail, refreshGBal])
+  );
 
   // Submit Result
   const [rEventId, setREventId] = useState('');
@@ -356,6 +403,29 @@ export default function AdminScreen() {
         <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
         <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
 
+        {/* --- My Balance (quick refresh) --- */}
+        <View style={{ backgroundColor:'#111', borderColor:'#2a2a2a', borderWidth:1, borderRadius:12, padding:12, marginBottom:12 }}>
+          <Text style={{ color:'#fff', fontWeight:'800' }}>My Balance</Text>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:8 }}>
+            <Text style={{ color:'#9a9a9a', fontVariant:['tabular-nums'] }}>
+              {adminBalCents == null ? '—' : `$${(adminBalCents/100).toFixed(2)}`}
+            </Text>
+            <Pressable
+              onPress={refreshMyBalance}
+              disabled={balRefreshing}
+              style={({ pressed }) => [
+                { borderColor:'#FF6600', borderWidth:1, borderRadius:999, paddingVertical:6, paddingHorizontal:12 },
+                pressed && { opacity:0.9 }
+              ]}
+              hitSlop={8}
+            >
+              {balRefreshing
+                ? <ActivityIndicator color="#FF6600" />
+                : <Text style={{ color:'#FF6600', fontWeight:'800' }}>Refresh</Text>}
+            </Pressable>
+          </View>
+        </View>
+        
         {/* Seed */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Seed Demo Data</Text>
@@ -372,15 +442,31 @@ export default function AdminScreen() {
           {/* Email */}
           <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
           <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
-          <View style={{ minHeight:18, marginTop:6 }}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', minHeight:18, marginTop:6 }}>
             {gBalLoading ? (
               <View style={{ flexDirection:'row', alignItems:'center', gap:6 }}>
                 <ActivityIndicator color={ORANGE} size="small" />
                 <Text style={s.meta}>Fetching balance…</Text>
               </View>
-            ) : (gBal != null) ? (
-              <Text style={s.meta}>Balance: <Text style={{color:'#fff'}}>{toDollars(gBal)}</Text></Text>
-            ) : null}
+            ) : (
+              <Text style={s.meta}>
+                Balance: <Text style={{color:'#fff'}}>{gBal != null ? toDollars(gBal) : '—'}</Text>
+              </Text>
+            )}
+            <Pressable
+              onPress={refreshGBal}
+              disabled={gBalLoading || !gEmail.trim()}
+              style={({ pressed }) => [
+                { borderColor: ORANGE, borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, marginLeft: 10 },
+                pressed && { opacity: 0.9 },
+                (!gEmail.trim() || gBalLoading) && { opacity: 0.6 }
+              ]}
+              hitSlop={8}
+            >
+              {gBalLoading
+                ? <ActivityIndicator color={ORANGE} />
+                : <Text style={{ color: ORANGE, fontWeight: '800' }}>Refresh</Text>}
+            </Pressable>
           </View>
 
           {/* Amount */}
@@ -407,7 +493,18 @@ export default function AdminScreen() {
           </View>
 
           {/* Note */}
-          <Text style={[s.meta, { marginTop: 10 }]}>Note (optional)</Text>
+          <View style={s.noteHeaderRow}>
+            <Text style={[s.meta, { marginTop: 10, marginBottom: 0 }]}>Note (optional)</Text>
+            {gNote ? (
+              <Pressable
+                onPress={() => setGNote('')}
+                hitSlop={8}
+                style={({ pressed }) => [s.clearChip, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={s.clearChipText}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
           <TextInput
             style={s.input}
             placeholder="e.g., refund / promo / manual adj"
@@ -652,6 +749,10 @@ const s = StyleSheet.create({
 
   copyBtn:{ borderColor:'#444', borderWidth:1, paddingVertical:4, paddingHorizontal:8, borderRadius:8 },
   copyBtnText:{ color:'#fff', fontSize:12, fontWeight:'700' },
+
+  noteHeaderRow:{ flexDirection:'row', alignItems:'center', justifyContent:'space-between' },
+  clearChip:{ borderColor:'#444', borderWidth:1, borderRadius:999, paddingVertical:4, paddingHorizontal:10, marginTop:10 },
+  clearChipText:{ color:'#fff', fontSize:12, fontWeight:'700' },
 
   // Time inputs
   timeRow:{ flexDirection:'row', gap:8, marginTop:8 },
