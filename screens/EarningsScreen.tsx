@@ -9,12 +9,41 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+
 } from 'react-native';
+
+// --- Friendly labels for Stripe requirements ---
+const REQ_LABELS: Array<[RegExp, { label: string; icon: string }]> = [
+  [/external_account/,                          { label: 'Add bank account',         icon: '🏦' }],
+  [/individual\.verification\.document/,        { label: 'Upload ID document',       icon: '🪪' }],
+  [/company\.verification\.document/,           { label: 'Upload company documents', icon: '📄' }],
+  [/individual\.ssn_(last_4|last4)/,            { label: 'Enter SSN last 4',         icon: '🔢' }],
+  [/individual\.(first_name|last_name)/,        { label: 'Complete legal name',      icon: '👤' }],
+  [/individual\.dob\./,                         { label: 'Enter date of birth',      icon: '🎂' }],
+  [/individual\.address/,                       { label: 'Add address',              icon: '🏠' }],
+  [/business_profile\.mcc/,                     { label: 'Select business category', icon: '🏷️' }],
+  [/business_profile\.url/,                     { label: 'Add website / profile',    icon: '🔗' }],
+  [/tos_acceptance\./,                          { label: 'Accept Stripe terms',      icon: '✍️' }],
+];
+
+function friendlyRequirement(key: string) {
+  for (const [re, info] of REQ_LABELS) {
+    if (re.test(key)) return info;
+  }
+  // Fallback: prettify last segment
+  const last = key.split('.').slice(-1)[0]?.replace(/_/g, ' ') || key;
+  const pretty = last.charAt(0).toUpperCase() + last.slice(1);
+  return { label: pretty, icon: '⚠️' };
+}
+
+/** Local helper: format cents to "D.CC" string */
+const toDollars = (cents: number | null | undefined) =>
+  typeof cents === 'number' ? (cents / 100).toFixed(2) : null;
+
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
 import {
   getBalance,
-  dollars as toDollars,
   getConnectStatus,
   startConnectOnboarding,
   getApiBase,
@@ -193,14 +222,38 @@ export default function EarningsScreen() {
               </Text>
             </View>
 
-            {!!(connect as any).requirements_due?.length && (
-              <View style={{ marginTop: 12 }}>
-                <Text style={s.sectionLabel}>Requirements due</Text>
-                {(connect as any).requirements_due.map((it: string) => (
-                  <Text key={it} style={s.subtleBullet}>• {it}</Text>
-                ))}
-              </View>
-            )}
+            {(() => {
+              const rawReqs =
+                (connect as any)?.requirements_due ||
+                (connect as any)?.requirements?.currently_due ||
+                [];
+              const reqs = Array.isArray(rawReqs) ? Array.from(new Set(rawReqs)) : [];
+
+              return (
+                <View style={{ marginTop: 12 }}>
+                  {reqs.length > 0 ? (
+                    <>
+                      <Text style={s.sectionLabel}>Requirements due</Text>
+                      <View style={s.reqWrap}>
+                        {reqs.map((key: string) => {
+                          const { label, icon } = friendlyRequirement(key);
+                          return (
+                            <View key={key} style={s.reqPill}>
+                              <Text style={s.reqIcon}>{icon}</Text>
+                              <Text style={s.reqText}>{label}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </>
+                  ) : (
+                    <View style={s.reqBox}>
+                      <Text style={s.reqTitle}>No outstanding requirements 🎉</Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })()}
 
             <View style={[s.row, { marginTop: 14 }]}>
               {!(connect as any).hasAccount || !(connect as any).payouts_enabled ? (
@@ -301,4 +354,29 @@ const s = StyleSheet.create({
   kv: { color: colors.WHITE, fontSize: 14, lineHeight: 20 },
   kvKey: { color: '#bdbdbd', fontWeight: '800' },
   kvVal: { color: '#ffffff', fontWeight: '700' },
+
+    // Requirements UI
+    reqBox: {
+      marginTop: 10,
+      backgroundColor: '#151519',
+      borderColor: colors.BORDER,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: 10,
+      padding: 10,
+    },
+    reqTitle: { color: colors.MUTED_TEXT, fontSize: 12, fontWeight: '800', marginBottom: 8 },
+    reqWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    reqPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      backgroundColor: '#1b1b1e',
+      borderColor: colors.BORDER,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: 999,
+      paddingVertical: 6,
+      paddingHorizontal: 10,
+    },
+    reqIcon: { fontSize: 12 },
+    reqText: { color: colors.TEXT, fontSize: 12, fontWeight: '700' },
 });
