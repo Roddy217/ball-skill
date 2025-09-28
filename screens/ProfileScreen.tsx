@@ -82,6 +82,22 @@ function buildCatalog(): CatalogEvent[] {
 const catalog = buildCatalog();
 const catMap = new Map(catalog.map(ev => [ev.id, ev]));
 
+function hydrateIds(ids: string[]): CatalogEvent[] {
+  return ids.map(id => {
+    const ev = catMap.get(id);
+    if (ev) return ev;
+    // Fallback placeholder so unknown IDs still render
+    return {
+      id,
+      title: 'Joined Event',
+      date: '—',
+      startTs: Date.now(),
+      locationType: 'in_person',
+      fee: 0,
+    } as CatalogEvent;
+  });
+}
+
 // --- Credits types/helpers ---
 type CreditEntry = {
   ts: number;
@@ -91,7 +107,7 @@ type CreditEntry = {
 };
 function centsToDollars(c: number) { return (Number(c || 0) / 100).toFixed(2); }
 function formatDelta(c: number) { const sign = c >= 0 ? "+" : "-"; return `${sign}$${centsToDollars(Math.abs(c))}`; }
-type GroupMode = 'DAY' | 'MONTH' | 'YEAR';
+type GroupMode = 'ALL' | 'DAY' | 'MONTH' | 'YEAR';
 function bucketLabel(d: Date, mode: GroupMode) {
   if (mode === 'DAY')   return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   if (mode === 'MONTH') return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
@@ -104,6 +120,35 @@ function groupHistory(list: CreditEntry[], mode: GroupMode) {
     (by[label] ||= []).push(it);
   });
   return Object.entries(by).map(([label, items]) => ({ label, items }));
+}
+
+// ---- Extra helpers: TX filters + Month/Week utilities ----
+type TxSort = 'NEWEST' | 'OLDEST';
+type TxType = 'ALL' | 'CREDITS' | 'DEBITS';
+
+function monthKeyFromTs(ts: number) {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+function monthLabelFromKey(key: string) {
+  const [y, m] = key.split('-').map(Number);
+  const d = new Date(y, (m || 1) - 1, 1);
+  return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+function sundayStart(ts: number) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay(); // 0=Sun
+  d.setDate(d.getDate() - dow);
+  return d.getTime();
+}
+function weekEndFromStart(startMs: number) {
+  const d = new Date(startMs);
+  d.setDate(d.getDate() + 6);
+  d.setHours(23, 59, 59, 999);
+  return d.getTime();
 }
 
 // --- UI ---
@@ -123,7 +168,65 @@ export default function ProfileScreen() {
   // Transaction history
   const [histLoading, setHistLoading] = useState(false);
   const [history, setHistory] = useState<CreditEntry[]>([]);
-  const [groupBy, setGroupBy] = useState<GroupMode>('DAY');
+  const [groupBy, setGroupBy] = useState<GroupMode>('ALL');
+
+  // TX filters
+  const [txSort, setTxSort] = useState<TxSort>('NEWEST');
+  const [txType, setTxType] = useState<TxType>('ALL');
+  const [txQuery, setTxQuery] = useState<string>('');
+
+  // Pagination (visible counts)
+  const [txVisibleCount, setTxVisibleCount] = useState(10);
+  const [evVisibleCount, setEvVisibleCount] = useState(5);
+
+  const filteredHistory = useMemo(() => {
+    let l = [...history];
+
+    // Type filter
+    if (txType === 'CREDITS') l = l.filter(x => x.delta > 0);
+    else if (txType === 'DEBITS') l = l.filter(x => x.delta < 0);
+
+    // Note/query filter
+    const q = txQuery.trim().toLowerCase();
+    if (q) l = l.filter(x => (x.note || '').toLowerCase().includes(q));
+
+    // Date-range filter driven by the quick chips
+    if (groupBy !== 'ALL') {
+      const now = new Date();
+      let startTs: number | null = null;
+
+      if (groupBy === 'DAY') {
+        const d = new Date(now);
+        d.setHours(0, 0, 0, 0);
+        startTs = d.getTime();
+      } else if (groupBy === 'MONTH') {
+        const d = new Date(now.getFullYear(), now.getMonth(), 1);
+        startTs = d.getTime();
+      } else if (groupBy === 'YEAR') {
+        const d = new Date(now.getFullYear(), 0, 1);
+        startTs = d.getTime();
+      }
+
+      if (startTs != null) {
+        l = l.filter(x => x.ts >= startTs);
+      }
+    }
+
+    // Sort
+    l.sort((a, b) => (txSort === 'NEWEST' ? b.ts - a.ts : a.ts - b.ts));
+    return l;
+  }, [history, txType, txSort, txQuery, groupBy]);
+
+  // Apply pagination to transactions
+  const limitedHistory = useMemo(
+    () => filteredHistory.slice(0, txVisibleCount),
+    [filteredHistory, txVisibleCount]
+  );
+
+  // Joined-events date filters
+  const [evDateMode, setEvDateMode] = useState<'ALL' | 'MONTH' | 'WEEK'>('ALL');
+  const [evMonthKey, setEvMonthKey] = useState<string | null>(null);
+  const [evWeekRange, setEvWeekRange] = useState<{ start: number; end: number } | null>(null);
 
   // Prevent double-taps / duplicate refunds
   const [unjoiningSet, setUnjoiningSet] = useState<Set<string>>(new Set());
@@ -176,21 +279,41 @@ export default function ProfileScreen() {
   const [filter, setFilter] = useState<JoinFilter>('SOONEST');
   const [query, setQuery] = useState<string>('');
 
-  const hydrate = useCallback((ids: string[]): CatalogEvent[] => {
-    return ids.map(id => {
-      const ev = catMap.get(id);
-      if (ev) return ev;
-      // Fallback placeholder so unknown IDs still render
-      return {
-        id,
-        title: 'Joined Event',
-        date: '—',
-        startTs: Date.now(),
-        locationType: 'in_person',
-        fee: 0,
-      } as CatalogEvent;
+  // Build Month/Week choices from ALL joined events
+  const allJoinedEvents = useMemo(() => hydrateIds(joinedIds), [joinedIds]);
+
+  const monthChoices = useMemo(() => {
+    const map = new Map<string, number>(); // key -> count
+    for (const ev of allJoinedEvents) {
+      const key = monthKeyFromTs(ev.startTs);
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    // sort newest month first
+    const keys = [...map.keys()].sort((a, b) => {
+      const [ya, ma] = a.split('-').map(Number);
+      const [yb, mb] = b.split('-').map(Number);
+      return yb - ya || mb - ma;
     });
-  }, []);
+    return keys.map(key => ({ key, label: monthLabelFromKey(key), count: map.get(key) || 0 }));
+  }, [allJoinedEvents]);
+
+  const weekChoices = useMemo(() => {
+    const map = new Map<number, number>(); // weekStartMs -> count
+    for (const ev of allJoinedEvents) {
+      const start = sundayStart(ev.startTs);
+      map.set(start, (map.get(start) || 0) + 1);
+    }
+    // newest week first
+    const starts = [...map.keys()].sort((a, b) => b - a);
+    return starts.map(start => {
+      const end = weekEndFromStart(start);
+      const sd = new Date(start), ed = new Date(end);
+      const label =
+        `${sd.toLocaleDateString()} – ${ed.toLocaleDateString()} (${map.get(start)})`;
+      return { start, end, label, count: map.get(start) || 0 };
+    });
+  }, [allJoinedEvents]);
+
 
   const load = useCallback(async () => {
     if (!hasEmail) {
@@ -303,15 +426,47 @@ export default function ProfileScreen() {
 
   const rows = useMemo(() => {
     console.log('[Profile][hydrate] joinedIds =', joinedIds);
-    let events = hydrate(joinedIds);
+    let events = hydrateIds(joinedIds);
+
+    // Existing type/location filters
     if (filter === 'IN_PERSON') events = events.filter(e => e.locationType === 'in_person');
     if (filter === 'ONLINE')    events = events.filter(e => e.locationType === 'online');
+
+    // Date filters (Month/Week)
+    if (evDateMode === 'MONTH' && evMonthKey) {
+      events = events.filter(e => monthKeyFromTs(e.startTs) === evMonthKey);
+    } else if (evDateMode === 'WEEK' && evWeekRange) {
+      events = events.filter(e => e.startTs >= evWeekRange.start && e.startTs <= evWeekRange.end);
+    }
+
+    // Sorters
     if (filter === 'SOONEST')   events = [...events].sort((a, b) => a.startTs - b.startTs);
     if (filter === 'NEWEST')    events = [...events].sort((a, b) => b.startTs - a.startTs);
+
+    // Search
     const q = query.trim().toLowerCase();
-    if (q) events = events.filter(e => e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q));
+    if (q) events = events.filter(e =>
+      e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q)
+    );
+
     return events;
-  }, [joinedIds, filter, query, hydrate]);
+  }, [joinedIds, filter, query, evDateMode, evMonthKey, evWeekRange]);
+
+  // Apply pagination to joined events
+  const limitedRows = useMemo(
+    () => rows.slice(0, evVisibleCount),
+    [rows, evVisibleCount]
+  );
+
+  // Reset paging when joined-event filters or data change
+  useEffect(() => {
+    setEvVisibleCount(10);
+  }, [joinedIds, filter, query, evDateMode, evMonthKey, evWeekRange]);
+
+  // Reset paging when TX filters/data change
+  useEffect(() => {
+    setTxVisibleCount(10);
+  }, [history, txSort, txType, txQuery]);
 
   const onUnjoin = useCallback((ev: CatalogEvent) => {
     // Route all unjoin actions through the single guarded handler to avoid duplicates.
@@ -320,8 +475,13 @@ export default function ProfileScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await load(); } finally { setRefreshing(false); }
-  }, [load]);
+    try {
+      await load();          // balance + joinedIds
+      await loadHistory();   // transaction history
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load, loadHistory]);
 
   return (
     <ScrollView
@@ -368,6 +528,41 @@ export default function ProfileScreen() {
           style={s.searchInput}
         />
 
+        {/* Date filter mode */}
+        <View style={s.filtersRow}>
+          <Chip label="All Dates" active={evDateMode==='ALL'} onPress={() => { setEvDateMode('ALL'); setEvMonthKey(null); setEvWeekRange(null); }} />
+          <Chip label="By Month"  active={evDateMode==='MONTH'} onPress={() => { setEvDateMode('MONTH'); setEvWeekRange(null); }} />
+          <Chip label="By Week"   active={evDateMode==='WEEK'} onPress={() => { setEvDateMode('WEEK'); setEvMonthKey(null); }} />
+        </View>
+
+        {/* Month choices */}
+        {evDateMode === 'MONTH' && (
+          <View style={s.filtersRow}>
+            {monthChoices.map(m => (
+              <Chip
+                key={m.key}
+                label={`${m.label} (${m.count})`}
+                active={evMonthKey === m.key}
+                onPress={() => { setEvMonthKey(m.key); setEvWeekRange(null); }}
+              />
+            ))}
+          </View>
+        )}
+
+        {/* Week choices */}
+        {evDateMode === 'WEEK' && (
+          <View style={s.filtersRow}>
+            {weekChoices.map(w => (
+              <Chip
+                key={String(w.start)}
+                label={w.label}
+                active={evWeekRange?.start === w.start}
+                onPress={() => { setEvWeekRange({ start: w.start, end: w.end }); setEvMonthKey(null); }}
+              />
+            ))}
+          </View>
+        )}
+
         {loading ? (
           <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
         ) : !hasEmail ? (
@@ -375,35 +570,133 @@ export default function ProfileScreen() {
         ) : rows.length === 0 ? (
           <Text style={s.hint}>No joined events match your filters.</Text>
         ) : (
-          <View style={{ gap: 10 }}>
-            {rows.map(ev => (
-              <View key={ev.id} style={s.joinItem}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
-                  <Text style={s.evMeta}>
-                    {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
-                  </Text>
-                  <View style={s.idRow}>
-                    <IdChip id={ev.id} withCopy />
-                    <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+          <>
+            <View style={s.sectionScroll}>
+              <ScrollView nestedScrollEnabled>
+                <View style={{ gap: 10 }}>
+              {limitedRows.map(ev => (
+                <View key={ev.id} style={s.joinItem}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
+                    <Text style={s.evMeta}>
+                      {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
+                    </Text>
+                    <View style={s.idRow}>
+                      <IdChip id={ev.id} withCopy />
+                      <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+                    </View>
                   </View>
+                  <Pressable
+                    onPress={() => handleProfileUnjoin(ev)}
+                    disabled={isUnjoining(ev.id)}
+                    style={({ pressed }) => [
+                      s.unBtn,
+                      isUnjoining(ev.id) && { opacity: 0.5 },
+                      pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Text style={s.unBtnText}>Unjoin</Text>
+                  </Pressable>
                 </View>
-                <Pressable
-                  onPress={() => handleProfileUnjoin(ev)}
-                  disabled={isUnjoining(ev.id)}
-                  style={({ pressed }) => [
-                    s.unBtn,
-                    isUnjoining(ev.id) && { opacity: 0.5 },
-                    pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
-                  ]}
-                >
-                  <Text style={s.unBtnText}>Unjoin</Text>
-                </Pressable>
-              </View>
-            ))}
-          </View>
+              ))}
+                </View>
+              </ScrollView>
+            </View>
+
+            {(rows.length > evVisibleCount) && (
+              <Pressable
+                onPress={() => setEvVisibleCount(c => c + 10)}
+                style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}
+              >
+                <Text style={s.loadMoreText}>Load more events ({rows.length - evVisibleCount} more)</Text>
+              </Pressable>
+            )}
+            {(evVisibleCount > 10) && (
+              <Pressable
+                onPress={() => setEvVisibleCount(10)}
+                style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}
+              >
+                <Text style={s.loadMoreText}>Show less</Text>
+              </Pressable>
+            )}
+          </>
         )}
       </View>
+
+      {/* Transactions */}
+    <View style={s.card}>
+      <Text style={s.cardTitle}>Transactions</Text>
+
+      {/* Sort / Type */}
+      <View style={s.filtersRow}>
+        <Chip label="Newest"  active={txSort==='NEWEST'}  onPress={() => setTxSort('NEWEST')} />
+        <Chip label="Oldest"  active={txSort==='OLDEST'}  onPress={() => setTxSort('OLDEST')} />
+        <Chip label="All"     active={txType==='ALL'}     onPress={() => setTxType('ALL')} />
+        <Chip label="Credits" active={txType==='CREDITS'} onPress={() => setTxType('CREDITS')} />
+        <Chip label="Debits"  active={txType==='DEBITS'}  onPress={() => setTxType('DEBITS')} />
+      </View>
+      <TextInput
+        placeholder="Filter notes…"
+        placeholderTextColor={colors.MUTED_TEXT}
+        value={txQuery}
+        onChangeText={setTxQuery}
+        style={s.searchInput}
+      />
+      {/* Group by period */}
+      <View style={s.filtersRow}>
+        <Chip label="All"         active={groupBy==='ALL'}   onPress={() => setGroupBy('ALL')} />
+        <Chip label="Today"       active={groupBy==='DAY'}   onPress={() => setGroupBy('DAY')} />
+        <Chip label="This Month"  active={groupBy==='MONTH'} onPress={() => setGroupBy('MONTH')} />
+        <Chip label="This Year"   active={groupBy==='YEAR'}  onPress={() => setGroupBy('YEAR')} />
+      </View>
+
+      {histLoading ? (
+        <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
+      ) : (history.length === 0 ? (
+        <Text style={s.hint}>No transactions yet.</Text>
+      ) : (
+        <>
+          <View style={s.sectionScroll}>
+            <ScrollView nestedScrollEnabled>
+          {groupHistory(limitedHistory, groupBy === 'ALL' ? 'DAY' : groupBy).map(section => (
+            <View key={section.label} style={{ marginTop: 8 }}>
+              <Text style={s.sectionLabel}>{section.label}</Text>
+              {section.items.map((it, idx) => (
+                <View key={idx} style={s.histRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.histNote} numberOfLines={1}>{it.note || '—'}</Text>
+                    <Text style={s.histSub}>
+                      {new Date(it.ts).toLocaleString()} • Balance: ${centsToDollars(it.balanceAfter)}
+                    </Text>
+                  </View>
+                  <Text style={[s.histAmt, it.delta >= 0 ? s.amtPos : s.amtNeg]}>
+                    {formatDelta(it.delta)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ))}
+            </ScrollView>
+          </View>
+          {(filteredHistory.length > txVisibleCount) && (
+            <Pressable
+              onPress={() => setTxVisibleCount(c => c + 10)}
+              style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={s.loadMoreText}>Load more transactions ({filteredHistory.length - txVisibleCount} more)</Text>
+            </Pressable>
+          )}
+          {(txVisibleCount > 10) && (
+            <Pressable
+              onPress={() => setTxVisibleCount(10)}
+              style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={s.loadMoreText}>Show less</Text>
+            </Pressable>
+          )}
+        </>
+      ))}
+    </View>
     </ScrollView>
   );
 }
@@ -498,4 +791,18 @@ const s = StyleSheet.create({
   amtPos: { color: '#4CD964' },
   amtNeg: { color: '#FF453A' },
   sectionLabel: { color: colors.MUTED_TEXT, fontSize: 12, fontWeight: '800', marginBottom: 6 }
+  ,histSub: { color: colors.MUTED_TEXT, fontSize: 11, marginTop: 2 }
+  ,
+  loadMoreBtn: {
+    marginTop: 10,
+    alignSelf: 'center',
+    backgroundColor: '#1b1b1e',
+    borderColor: colors.BORDER,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  loadMoreText: { color: colors.TEXT, fontWeight: '800', fontSize: 13 },
+  sectionScroll: { maxHeight: 320 }
 });

@@ -160,3 +160,26 @@ export const startConnectOnboarding = (...a) => api.startConnectOnboarding(...a)
 
 // Convenience export for dollars formatting
 export { toDollars as dollars };
+
+/** -------------------- Credits: history -------------------- */
+export async function getCreditsHistory(email, opts = {}) {
+  const limit = Math.max(1, Math.min(500, Number(opts.limit ?? 100)));
+  const enc = encodeURIComponent(String(email || '').toLowerCase());
+  const urls = [
+    `${API_BASE_URL}/credits/${enc}/history?limit=${limit}`,
+    `${API_BASE_URL}/credits/history?email=${enc}&limit=${limit}`, // fallback shape
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      let json = {};
+      try { json = await res.json(); } catch (_e) {}
+      if (res.ok && json && (Array.isArray(json.history) || Array.isArray(json.items))) {
+        return json.history || json.items || [];
+      }
+    } catch (_e) {
+      // try next
+    }
+  }
+  return [];
+}
