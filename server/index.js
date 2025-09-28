@@ -5,11 +5,15 @@ import crypto from 'node:crypto';
 import Stripe from 'stripe';
 import attachSubmissions from './submissions.js';
 import attachJoins from './joins.js';
+import connectRouter, { connectWebhook } from './stripeConnect.js';
 
 const app = express();
+// Stripe Connect webhook MUST be before JSON parser (needs raw body)
+app.post('/api/connect/webhook', ...connectWebhook);
 attachJoins(app);
 app.use(cors());
 app.use(express.json());
+app.use('/api/connect', connectRouter);
 
 const { PORT = 3001, STRIPE_SECRET_KEY = '' } = process.env;
 
@@ -151,6 +155,16 @@ app.get('/api/credits/:email/history', (req, res) => {
 });
 
 // ---------- Stripe Connect ----------
+// helper to ensure http(s) URL
+function isHttpUrl(u) {
+  try {
+    const x = new URL(u);
+    return x.protocol === 'http:' || x.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 app.post('/api/stripe/connect/onboard', async (req, res) => {
   try {
     if (!stripe) return res.status(500).json({ success: false, error: 'stripe_not_configured' });
@@ -170,8 +184,11 @@ app.post('/api/stripe/connect/onboard', async (req, res) => {
       stripeAccountsByEmail.set(email, acctId);
     }
 
-    const refresh_url = req.body?.refreshUrl || 'https://dashboard.stripe.com/settings';
-    const return_url  = req.body?.returnUrl  || 'https://dashboard.stripe.com/';
+    // derive server origin so defaults are always valid http(s)
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const refresh_url = isHttpUrl(req.body?.refreshUrl) ? req.body.refreshUrl : `${origin}/connect/refresh`;
+    const return_url  = isHttpUrl(req.body?.returnUrl)  ? req.body.returnUrl  : `${origin}/connect/return`;
+
     const link = await stripe.accountLinks.create({
       account: acctId,
       refresh_url,
@@ -206,6 +223,14 @@ app.get('/api/stripe/connect/status/:email', async (req, res) => {
     console.error('connect/status error', e);
     res.status(500).json({ success: false, error: 'stripe_error' });
   }
+});
+
+// Simple landing pages used for refresh/return (ok in dev)
+app.get('/connect/refresh', (_req, res) => {
+  res.send('Stripe onboarding: refresh/continue from the app.');
+});
+app.get('/connect/return', (_req, res) => {
+  res.send('Stripe onboarding complete. You can return to the app.');
 });
 
 attachSubmissions(app);
