@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
 import { useAuth } from '../providers/AuthProvider';
+import * as bank from '../services/balanceService';
 import { addEmail } from '../services/emailStore';
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
@@ -150,6 +151,8 @@ const refreshMyBalance = useCallback(async () => {
         await applyCredits(e, 2500, 'seed');
       }
       await reloadEvents(); // reflect new events
+      await bank.refresh(email, 'admin-apply');
+      console.log('[Admin][balance] refreshed after apply');
       Alert.alert('Seed', 'Seeded 2 events + granted $25 to 3 users.');
     } catch (e:any) {
       Alert.alert('Seed failed', String(e?.message || e));
@@ -221,42 +224,95 @@ const refreshMyBalance = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
     setGBusy(true);
     try {
-      await applyCredits(gEmail, Math.abs(Number(gDelta)||0), gNote);
+      console.log('[Admin][doGrant] START', { email: gEmail, delta: gDelta, note: gNote });
+
+      // 1) apply credits (cents)
+      await applyCredits(gEmail, Math.abs(Number(gDelta) || 0), gNote);
+      console.log('[Admin][doGrant] applyCredits OK');
+
+      // 2) remember email for autocomplete
       await addEmail(gEmail);
+
+      // 3) refresh centralized cache so Profile/Events can see the new balance
+      await bank.refresh(gEmail, 'admin-apply');
+      console.log('[Admin][doGrant] bank.refresh DONE');
+
+      // 4) update the inline Admin “Balance:” row
       const bal = await getBalance(gEmail);
+      console.log('[Admin][doGrant] getBalance OK', { bal });
       setGBal(bal);
-      await refreshGBal();
-      setGNote('');
-      // refresh history immediately
+
+      // 5) if you adjusted your own account, refresh the “My Balance” card too
+      if (gEmail.trim().toLowerCase() === (user?.email || '').toLowerCase()) {
+        await refreshMyBalance();
+      }
+
+      // 6) refresh history immediately
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
-      Alert.alert('Credits', `Granted ${fmtDelta(Math.abs(Number(gDelta)||0))} to ${gEmail.trim().toLowerCase()}`);
-    } catch (e:any) {
+
+      // 7) clear the optional note
+      setGNote('');
+
+      Alert.alert(
+        'Credits',
+        `Granted ${fmtDelta(Math.abs(Number(gDelta)||0))} to ${gEmail.trim().toLowerCase()}`
+      );
+    } catch (e: any) {
+      console.log('[Admin][doGrant] ERROR', e);
       Alert.alert('Grant failed', String(e?.message || e));
     } finally {
       setGBusy(false);
+      console.log('[Admin][doGrant] END');
     }
-  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory, refreshGBal]);
+  }, [gEmail, gDelta, gNote, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
 
   const doDeduct = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
     setGBusy(true);
     try {
-      await applyCredits(gEmail, -Math.abs(Number(gDelta)||0), gNote);
+      console.log('[Admin][doDeduct] START', { email: gEmail, delta: gDelta, note: gNote });
+  
+      // 1) apply negative credits (cents)
+      await applyCredits(gEmail, -Math.abs(Number(gDelta) || 0), gNote);
+      console.log('[Admin][doDeduct] applyCredits OK');
+  
+      // 2) remember email for autocomplete
       await addEmail(gEmail);
+  
+      // 3) refresh centralized cache so Profile/Events can see the new balance
+      await bank.refresh(gEmail, 'admin-apply');
+      console.log('[Admin][doDeduct] bank.refresh DONE');
+  
+      // 4) update the inline Admin “Balance:” row
       const bal = await getBalance(gEmail);
+      console.log('[Admin][doDeduct] getBalance OK', { bal });
       setGBal(bal);
-      await refreshGBal();
-      setGNote('');
+  
+      // 5) if you adjusted your own account, refresh the “My Balance” card too
+      if (gEmail.trim().toLowerCase() === (user?.email || '').toLowerCase()) {
+        await refreshMyBalance();
+      }
+  
+      // 6) refresh history immediately
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
-      Alert.alert('Credits', `Deducted ${fmtDelta(-Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`);
-    } catch (e:any) {
+  
+      // 7) clear the optional note
+      setGNote('');
+  
+      Alert.alert(
+        'Credits',
+        `Deducted ${fmtDelta(-Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`
+      );
+    } catch (e: any) {
+      console.log('[Admin][doDeduct] ERROR', e);
       Alert.alert('Deduct failed', String(e?.message || e));
     } finally {
       setGBusy(false);
+      console.log('[Admin][doDeduct] END');
     }
-  }, [gEmail, gDelta, gNote, hQ, hLimit, loadHistory, refreshGBal]);
+  }, [gEmail, gDelta, gNote, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
 
   const refreshGBal = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
