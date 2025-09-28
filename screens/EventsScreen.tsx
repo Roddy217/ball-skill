@@ -203,6 +203,7 @@ useFocusEffect(
         await api.grantCredits(userEmail, -(fee * 100), `join:${evt.id}`);
       }
       await api.recordJoin(evt.id, userEmail);
+      await setJoinedLocal(userEmail, evt.id, true);
 
       // mark as joined locally
       setJoinedMap(prev => {
@@ -244,7 +245,8 @@ useFocusEffect(
             try {
               // remove join on server
               await api.unrecordJoin(evt.id, userEmail);
-
+              await setJoinedLocal(userEmail, evt.id, false);
+              
               // persist local flag false
               await setJoinedLocal(userEmail, evt.id, false);
 

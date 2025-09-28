@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { connectWebhook } from './stripe_webhooks.js';
+import attachStripeWebhooks from './stripe_webhooks.js';
 import cors from 'cors';
 import crypto from 'node:crypto';
 import Stripe from 'stripe';

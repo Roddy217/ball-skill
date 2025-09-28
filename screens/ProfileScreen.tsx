@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, Activity
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
-import api, { getBalance, getUserJoins, grantCredits } from '../services/api';
+import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory } from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 
@@ -80,6 +80,13 @@ function buildCatalog(): CatalogEvent[] {
 const catalog = buildCatalog();
 const catMap = new Map(catalog.map(ev => [ev.id, ev]));
 
+type CreditEntry = {
+  ts: number;
+  delta: number;           // cents, positive or negative
+  note?: string | null;
+  balanceAfter: number;    // cents
+};
+
 // --- UI ---
 type JoinFilter = 'ALL' | 'SOONEST' | 'NEWEST' | 'IN_PERSON' | 'ONLINE';
 
@@ -93,6 +100,11 @@ export default function ProfileScreen() {
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
+    // Transaction history
+    const [histLoading, setHistLoading] = useState(false);
+    const [history, setHistory] = useState<CreditEntry[]>([]);
+    const [groupBy, setGroupBy] = useState<'DAY' | 'MONTH' | 'YEAR'>('DAY');
+
   // Prevent double-taps / duplicate refunds
   const [unjoiningSet, setUnjoiningSet] = useState<Set<string>>(new Set());
   const isUnjoining = React.useCallback((id: string) => unjoiningSet.has(id), [unjoiningSet]);
@@ -100,9 +112,26 @@ export default function ProfileScreen() {
   // STEP3: balance-only loading flag
   const [balLoading, setBalLoading] = useState(false);
   const balanceDollars = useMemo(
+    
     () => (balanceCents != null ? (balanceCents / 100).toFixed(2) : null),
     [balanceCents]
   );
+
+  // Top-level: fetch transaction history (do NOT nest inside other hooks)
+const loadHistory = useCallback(async () => {
+  if (!email) return;
+  setHistLoading(true);
+  try {
+    const list = await getCreditsHistory(email, { limit: 100 });
+    console.log('[Profile][History] loaded', list.length);
+    setHistory(list);
+  } catch (e) {
+    console.log('[Profile][History][err]', e);
+    setHistory([]);
+  } finally {
+    setHistLoading(false);
+  }
+}, [email]);
 
   // Prevent duplicate unjoin/refund calls (critical exploit guard)
 
@@ -131,6 +160,7 @@ export default function ProfileScreen() {
       setJoinedIds([]);
       return;
     }
+    
     setLoading(true);
     try {
       const [b, j] = await Promise.all([
@@ -146,31 +176,38 @@ export default function ProfileScreen() {
     }
   }, [email, hasEmail]);
 
-  // STEP3: Fetch balance only (separate from joined events)
-  const loadBalanceOnly = useCallback(async () => {
-    if (!hasEmail) {
-      setBalanceCents(null);
-      return;
-    }
-    try {
-      setBalLoading(true);
-      console.log('[Profile][Balance] fetching for:', email);
-      const b = await getBalance(email);
-      console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
-      setBalanceCents(b as any);
-    } catch (e: any) {
-      console.log('[Profile][Balance] error:', e?.message || e);
-      Alert.alert('Error', e?.message || 'Failed to fetch balance');
-    } finally {
-      setBalLoading(false);
-    }
-  }, [email, hasEmail]);
+ // STEP3: Fetch balance only (separate from joined events)
+const loadBalanceOnly = useCallback(async () => {
+  if (!hasEmail) {
+    setBalanceCents(null);
+    return;
+  }
+  try {
+    setBalLoading(true);
+    console.log('[Profile][Balance] fetching for:', email);
+    const b = await getBalance(email);
+    console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
+    setBalanceCents(b as any);
+  } catch (e: any) {
+    console.log('[Profile][Balance] error:', e?.message || e);
+    Alert.alert('Error', e?.message || 'Failed to fetch balance');
+  } finally {
+    setBalLoading(false);
+  }
+}, [email, hasEmail]);
 
   useEffect(() => { load(); }, [load]);
   useFocusEffect(useCallback(() => {
     load();
     loadBalanceOnly(); // STEP3: also pull fresh balance on focus
   }, [load, loadBalanceOnly]));
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!email) return;
+      loadHistory();
+    }, [email, loadHistory])
+  );
 
   // Robust, single-shot Profile unjoin (guarded against double-fire)
 const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
