@@ -4,7 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
 import api, { getBalance, getUserJoins, grantCredits } from '../services/api';
-import { loadJoinedMap } from '../utils/joinState';
+import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 
 async function normalizeJoins(email: string) {
@@ -93,12 +93,18 @@ export default function ProfileScreen() {
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Prevent double-taps / duplicate refunds
+  const [unjoiningSet, setUnjoiningSet] = useState<Set<string>>(new Set());
+  const isUnjoining = React.useCallback((id: string) => unjoiningSet.has(id), [unjoiningSet]);
+
   // STEP3: balance-only loading flag
   const [balLoading, setBalLoading] = useState(false);
   const balanceDollars = useMemo(
     () => (balanceCents != null ? (balanceCents / 100).toFixed(2) : null),
     [balanceCents]
   );
+
+  // Prevent duplicate unjoin/refund calls (critical exploit guard)
 
   const [filter, setFilter] = useState<JoinFilter>('SOONEST');
   const [query, setQuery] = useState<string>('');
@@ -166,6 +172,61 @@ export default function ProfileScreen() {
     loadBalanceOnly(); // STEP3: also pull fresh balance on focus
   }, [load, loadBalanceOnly]));
 
+  // Robust, single-shot Profile unjoin (guarded against double-fire)
+const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
+  if (!email) { Alert.alert('Sign in', 'Please sign in to unjoin.'); return; }
+
+  if (isUnjoining(ev.id)) {
+    console.log('[Profile][unjoin] BLOCKED duplicate tap for', ev.id);
+    return;
+  }
+
+  // mark busy
+  setUnjoiningSet(prev => {
+    const next = new Set(prev);
+    next.add(ev.id);
+    return next;
+  });
+
+  const fee = Math.abs(Number(ev.fee) || 0);
+  console.log('[Profile][unjoin] START', { id: ev.id, email, fee });
+
+  try {
+    // 1) remove join on server (idempotent)
+    await api.unrecordJoin(ev.id, email);
+    console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
+
+    // 2) update local cache so Events tab respects the change
+    await setJoinedLocal(email, ev.id, false);
+    console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
+
+    // 3) do ONE refund
+    if (fee > 0) {
+      await grantCredits(email, fee * 100, `unjoin:${ev.id}`);
+      console.log('[Profile][unjoin] grantCredits OK', ev.id, fee * 100);
+    }
+
+    // 4) update UI + balance
+    setJoinedIds(prev => prev.filter(id => id !== ev.id));
+    const cents = await getBalance(email).catch(() => null);
+    if (typeof cents === 'number') setBalanceCents(cents as any);
+
+    Alert.alert('Unjoined', `Refunded $${fee}.`);
+  } catch (e: any) {
+    console.log('[Profile][unjoin] ERROR', e);
+    Alert.alert('Failed', e?.message || 'Could not unjoin');
+  } finally {
+    // clear busy
+    setUnjoiningSet(prev => {
+      const next = new Set(prev);
+      next.delete(ev.id);
+      return next;
+    });
+    console.log('[Profile][unjoin] END', ev.id);
+  }
+  }, [email, getBalance, grantCredits]
+);
+  
   const rows = useMemo(() => {
     console.log('[Profile][hydrate] joinedIds =', joinedIds);
     let events = hydrate(joinedIds);
@@ -179,31 +240,9 @@ export default function ProfileScreen() {
   }, [joinedIds, filter, query, hydrate]);
 
   const onUnjoin = useCallback((ev: CatalogEvent) => {
-    if (!hasEmail) return;
-    Alert.alert(
-      'Unjoin event',
-      `Refund $${ev.fee} and remove “${ev.title}”?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Unjoin',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await grantCredits(email, ev.fee * 100, `unjoin:${ev.id}`); // refund in cents
-              await api.unrecordJoin(ev.id, email);                       // remove join
-              setJoinedIds(prev => prev.filter(id => id !== ev.id));      // remove from list
-              const b = await getBalance(email).catch(() => null);        // refresh balance
-              setBalanceCents(b as any);
-              Alert.alert('Unjoined', `Refunded $${ev.fee}.`);
-            } catch (e: any) {
-              Alert.alert('Failed', e?.message || 'Could not unjoin');
-            }
-          }
-        }
-      ]
-    );
-  }, [email, hasEmail]);
+    // Route all unjoin actions through the single guarded handler to avoid duplicates.
+    handleProfileUnjoin(ev);
+  }, [handleProfileUnjoin]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -276,7 +315,15 @@ export default function ProfileScreen() {
                     <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
                   </View>
                 </View>
-                <Pressable onPress={() => onUnjoin(ev)} style={({ pressed }) => [s.unBtn, pressed && { opacity: 0.85 }]}>
+                <Pressable
+                  onPress={() => handleProfileUnjoin(ev)}
+                  disabled={isUnjoining(ev.id)}
+                  style={({ pressed }) => [
+                    s.unBtn,
+                    isUnjoining(ev.id) && { opacity: 0.5 },
+                    pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
+                  ]}
+                >
                   <Text style={s.unBtnText}>Unjoin</Text>
                 </Pressable>
               </View>
@@ -290,6 +337,7 @@ export default function ProfileScreen() {
 
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
+    
     <Pressable onPress={onPress} style={({ pressed }) => [ s.chip, active && s.chipActive, pressed && { opacity: 0.9 } ]} hitSlop={8}>
       <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
     </Pressable>

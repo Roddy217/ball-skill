@@ -136,29 +136,40 @@ export default function EventsScreen() {
     })();
   }, []);
 
-  // Also refresh API base whenever this screen gains focus (after Admin Save)
-  useFocusEffect(
-    useCallback(() => {
-      (async () => {
-        await loadApiBase();
-        setApiBaseState(getApiBase());
-        // Clear and refetch “joined” flags when API base changes
-        // setJoinedMap({});
-      })();
-    }, [])
-  );
-
+  /// Also refresh API base whenever this screen gains focus (after Admin Save)
   useFocusEffect(
     useCallback(() => {
       let alive = true;
       (async () => {
-        if (!userEmail) return;
-        const local = await loadJoinedMap(userEmail);   // ← LOCAL cache only
-        if (alive) setJoinedMap(local);                 // define flags so prefetch won't override
+        await loadApiBase();
+        if (!alive) return;
+        const base = getApiBase();
+        setApiBaseState(base);
+        // NOTE: Do NOT clear or mutate joinedMap here.
+        // If you ever need to re-hydrate on base change:
+        // if (userEmail) { const local = await loadJoinedMap(userEmail); if (alive) setJoinedMap(local || {}); }
       })();
       return () => { alive = false; };
-    }, [userEmail])
+    }, [/* no deps */])
   );
+
+  // Re-hydrate joined flags from LOCAL cache on focus (no server reads/writes here)
+useFocusEffect(
+  useCallback(() => {
+    let alive = true;
+    (async () => {
+      if (!userEmail) {
+        if (alive) setJoinedMap({});
+        return;
+      }
+      const local = await loadJoinedMap(userEmail);  // ← LOCAL only
+      if (!alive) return;
+      console.log('[Events][focus] loadJoinedMap keys =', Object.keys(local || {}));
+      setJoinedMap(local || {});
+    })();
+    return () => { alive = false; };
+  }, [userEmail])
+);
   
   // Prefetch registration status for visible items
   useEffect(() => {
