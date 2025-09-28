@@ -4,19 +4,39 @@ import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
 import api, { getBalance, getUserJoins, grantCredits } from '../services/api';
+import { loadJoinedMap } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 
 async function normalizeJoins(email: string) {
   try {
     const raw = await getUserJoins(email);
     console.log('[Profile][joins] raw =', raw);
-    if (Array.isArray(raw)) return raw;
-    if (raw && Array.isArray((raw as any).joins)) return (raw as any).joins;
-    if (raw && Array.isArray((raw as any).events)) return (raw as any).events;
-    return [];
+
+    // Accept array or legacy shapes
+    let ids: string[] = [];
+    if (Array.isArray(raw)) {
+      ids = raw
+        .map((it: any) => it?.id || it?.eventId)
+        .filter(Boolean);
+    } else if (raw && Array.isArray((raw as any).joins)) {
+      ids = (raw as any).joins.map((it: any) => it?.id || it?.eventId).filter(Boolean);
+    } else if (raw && Array.isArray((raw as any).events)) {
+      ids = (raw as any).events.map((it: any) => it?.id || it?.eventId).filter(Boolean);
+    }
+
+    if (ids.length > 0) return ids;
+
+    // Fallback to local persisted state if server has no route / returns []
+    const localMap = await loadJoinedMap(email);
+    const localIds = Object.keys(localMap || {}).filter(k => !!(localMap as any)[k]);
+    console.log('[Profile][joins][fallback local] ids =', localIds);
+    return localIds;
   } catch (e) {
     console.log('[Profile][joins] error', e);
-    return [];
+    const localMap = await loadJoinedMap(email);
+    const localIds = Object.keys(localMap || {}).filter(k => !!(localMap as any)[k]);
+    console.log('[Profile][joins][fallback local on error] ids =', localIds);
+    return localIds;
   }
 }
 
@@ -84,7 +104,19 @@ export default function ProfileScreen() {
   const [query, setQuery] = useState<string>('');
 
   const hydrate = useCallback((ids: string[]): CatalogEvent[] => {
-    return ids.map(id => catMap.get(id)).filter(Boolean) as CatalogEvent[];
+    return ids.map(id => {
+      const ev = catMap.get(id);
+      if (ev) return ev;
+      // Fallback placeholder so unknown IDs still render
+      return {
+        id,
+        title: 'Joined Event',
+        date: '—',
+        startTs: Date.now(),
+        locationType: 'in_person',
+        fee: 0,
+      } as CatalogEvent;
+    });
   }, []);
 
   const load = useCallback(async () => {
@@ -135,6 +167,7 @@ export default function ProfileScreen() {
   }, [load, loadBalanceOnly]));
 
   const rows = useMemo(() => {
+    console.log('[Profile][hydrate] joinedIds =', joinedIds);
     let events = hydrate(joinedIds);
     if (filter === 'IN_PERSON') events = events.filter(e => e.locationType === 'in_person');
     if (filter === 'ONLINE')    events = events.filter(e => e.locationType === 'online');

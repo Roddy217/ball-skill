@@ -6,6 +6,7 @@ import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../s
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import IdChip from '../components/IdChip';
+import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import { useAuth } from '../providers/AuthProvider';
 
 type EventItem = {
@@ -35,6 +36,19 @@ const baseSeed: EventItem[] = [
   { id: 'evt_002', title: 'Virtual Shooting Clinic', date: 'Sun, Sep 21 • 6:00 PM', startTs: new Date('2025-09-21T18:00:00-04:00').getTime(), locationType: 'online', fee: 10, spotsLeft: 20, drills: ['Form','Release'] },
   { id: 'evt_003', title: 'Guard Skills Lab', date: 'Tue, Sep 23 • 7:30 PM', startTs: new Date('2025-09-23T19:30:00-04:00').getTime(), locationType: 'in_person', venue: 'Downtown Rec Center', fee: 10, spotsLeft: 3, drills: ['Handles','Finishing','Footwork'] },
 ];
+
+//Demo event for testing join/unjoin
+const TEST_EVENT: EventItem = {
+  id: 'evt_TEST',
+  title: '🧪 Test Sync Event',
+  date: 'Today • 8:00 PM',
+  startTs: Date.now() + 60 * 60 * 1000,
+  locationType: 'in_person',
+  venue: 'Lab Gym',
+  fee: 10,
+  spotsLeft: 9,
+  drills: ['Sync', 'Join', 'Unjoin'],
+};
 
 function generateEvent(idx: number): EventItem {
   const isOnline = idx % 2 === 0;
@@ -67,7 +81,7 @@ export default function EventsScreen() {
   const [balance, setBalance] = useState<string | null>(null)
 
   const [pool, setPool] = useState<EventItem[]>(() => {
-    const first: EventItem[] = [...baseSeed];
+    const first: EventItem[] = [...baseSeed]; //test event line
     for (let i = 4; i <= 20; i++) first.push(generateEvent(i));
     return first;
   });
@@ -129,11 +143,23 @@ export default function EventsScreen() {
         await loadApiBase();
         setApiBaseState(getApiBase());
         // Clear and refetch “joined” flags when API base changes
-        setJoinedMap({});
+        // setJoinedMap({});
       })();
     }, [])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      (async () => {
+        if (!userEmail) return;
+        const local = await loadJoinedMap(userEmail);   // ← LOCAL cache only
+        if (alive) setJoinedMap(local);                 // define flags so prefetch won't override
+      })();
+      return () => { alive = false; };
+    }, [userEmail])
+  );
+  
   // Prefetch registration status for visible items
   useEffect(() => {
     let cancelled = false;
@@ -141,7 +167,7 @@ export default function EventsScreen() {
       for (const evt of visibleRows) {
         if (joinedMap[evt.id] !== undefined) continue;
         try {
-        const { registered } = await getRegistrationStatus(evt.id, userEmail);
+        const { registered } = await getRegistrationStatus(userEmail, evt.id);
         if (!cancelled) {
           setJoinedMap(prev => ({ ...prev, [evt.id]: !!registered }));
         }
@@ -168,7 +194,12 @@ export default function EventsScreen() {
       await api.recordJoin(evt.id, userEmail);
 
       // mark as joined locally
-      setJoinedMap(prev => ({ ...prev, [evt.id]: true }));
+      setJoinedMap(prev => {
+        const next = { ...prev, [evt.id]: true };
+        saveJoinedMap(userEmail, next).catch(() => {});
+        return next;
+      });
+      
 
       // fetch and show new balance (convert cents→dollars if needed)
       const cents = await getBalance(userEmail);
@@ -203,14 +234,17 @@ export default function EventsScreen() {
               // remove join on server
               await api.unrecordJoin(evt.id, userEmail);
 
+              // persist local flag false
+              await setJoinedLocal(userEmail, evt.id, false);
+
+              // update in-memory state immediately so prefetch won't flip it back
+              setJoinedMap(prev => ({ ...prev, [evt.id]: false }));
+
               // refund credits (cents)
               const fee = Math.abs(Number(evt.fee) || 0);
               if (fee > 0) {
                 await api.grantCredits(userEmail, fee * 100, `unjoin:${evt.id}`);
               }
-
-              // update local state
-              setJoinedMap(prev => ({ ...prev, [evt.id]: false }));
 
               // show new balance
               const cents = await getBalance(userEmail);
