@@ -3,13 +3,15 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, Activity
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
-import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory } from '../services/api';
+import * as api from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 
+console.log('[Profile] api keys:', Object.keys(api));
+
 async function normalizeJoins(email: string) {
   try {
-    const raw = await getUserJoins(email);
+    const raw = await api.getUserJoins(email);
     console.log('[Profile][joins] raw =', raw);
 
     // Accept array or legacy shapes
@@ -80,12 +82,29 @@ function buildCatalog(): CatalogEvent[] {
 const catalog = buildCatalog();
 const catMap = new Map(catalog.map(ev => [ev.id, ev]));
 
+// --- Credits types/helpers ---
 type CreditEntry = {
   ts: number;
   delta: number;           // cents, positive or negative
   note?: string | null;
   balanceAfter: number;    // cents
 };
+function centsToDollars(c: number) { return (Number(c || 0) / 100).toFixed(2); }
+function formatDelta(c: number) { const sign = c >= 0 ? "+" : "-"; return `${sign}$${centsToDollars(Math.abs(c))}`; }
+type GroupMode = 'DAY' | 'MONTH' | 'YEAR';
+function bucketLabel(d: Date, mode: GroupMode) {
+  if (mode === 'DAY')   return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  if (mode === 'MONTH') return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  return String(d.getFullYear());
+}
+function groupHistory(list: CreditEntry[], mode: GroupMode) {
+  const by: Record<string, CreditEntry[]> = {};
+  ;[...list].sort((a,b) => b.ts - a.ts).forEach(it => {
+    const label = bucketLabel(new Date(it.ts), mode);
+    (by[label] ||= []).push(it);
+  });
+  return Object.entries(by).map(([label, items]) => ({ label, items }));
+}
 
 // --- UI ---
 type JoinFilter = 'ALL' | 'SOONEST' | 'NEWEST' | 'IN_PERSON' | 'ONLINE';
@@ -94,46 +113,65 @@ export default function ProfileScreen() {
   const { user } = useAuth();
   const email = (user?.email || '').toLowerCase();
   const hasEmail = !!(user && !user.isAnonymous && user.email);
+  useEffect(() => { api.loadApiBase().catch(() => {}); }, []);
 
   const [loading, setLoading] = useState(false);
   const [balanceCents, setBalanceCents] = useState<number | null>(null);
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
-    // Transaction history
-    const [histLoading, setHistLoading] = useState(false);
-    const [history, setHistory] = useState<CreditEntry[]>([]);
-    const [groupBy, setGroupBy] = useState<'DAY' | 'MONTH' | 'YEAR'>('DAY');
+  // Transaction history
+  const [histLoading, setHistLoading] = useState(false);
+  const [history, setHistory] = useState<CreditEntry[]>([]);
+  const [groupBy, setGroupBy] = useState<GroupMode>('DAY');
 
   // Prevent double-taps / duplicate refunds
   const [unjoiningSet, setUnjoiningSet] = useState<Set<string>>(new Set());
   const isUnjoining = React.useCallback((id: string) => unjoiningSet.has(id), [unjoiningSet]);
 
-  // STEP3: balance-only loading flag
+  // Balance helpers
   const [balLoading, setBalLoading] = useState(false);
   const balanceDollars = useMemo(
-    
     () => (balanceCents != null ? (balanceCents / 100).toFixed(2) : null),
     [balanceCents]
   );
 
   // Top-level: fetch transaction history (do NOT nest inside other hooks)
-const loadHistory = useCallback(async () => {
-  if (!email) return;
-  setHistLoading(true);
-  try {
-    const list = await getCreditsHistory(email, { limit: 100 });
-    console.log('[Profile][History] loaded', list.length);
-    setHistory(list);
-  } catch (e) {
-    console.log('[Profile][History][err]', e);
-    setHistory([]);
-  } finally {
-    setHistLoading(false);
-  }
-}, [email]);
-
-  // Prevent duplicate unjoin/refund calls (critical exploit guard)
+  const loadHistory = useCallback(async () => {
+    if (!email) return;
+    setHistLoading(true);
+    try {
+      let list: CreditEntry[] = [];
+      const maybe = (api as any)?.getCreditsHistory;
+  
+      if (typeof maybe === 'function') {
+        // Preferred path: services layer
+        list = await maybe(email, { limit: 100 });
+      } else {
+        // Fallback: direct fetch so UI keeps working even if services/api
+        // doesn't export getCreditsHistory in this build.
+        const base =
+          (api as any)?.getApiBase?.() ||
+          (process.env as any)?.EXPO_PUBLIC_SERVER_URL ||
+          'http://localhost:3001/api';
+        const res = await fetch(`${base}/credits/${encodeURIComponent(email)}/history?limit=100`);
+        if (res.ok) {
+          const json = await res.json();
+          list = Array.isArray(json?.history) ? json.history : [];
+        } else {
+          list = [];
+        }
+      }
+  
+      console.log('[Profile][History] loaded', list.length);
+      setHistory(list);
+    } catch (e) {
+      console.log('[Profile][History][err]', e);
+      setHistory([]);
+    } finally {
+      setHistLoading(false);
+    }
+  }, [email]);
 
   const [filter, setFilter] = useState<JoinFilter>('SOONEST');
   const [query, setQuery] = useState<string>('');
@@ -160,11 +198,11 @@ const loadHistory = useCallback(async () => {
       setJoinedIds([]);
       return;
     }
-    
+
     setLoading(true);
     try {
       const [b, j] = await Promise.all([
-        getBalance(email).catch(() => null),
+        api.getBalance(email).catch(() => null),
         normalizeJoins(email),
       ]);
       setBalanceCents(b as any);
@@ -176,30 +214,30 @@ const loadHistory = useCallback(async () => {
     }
   }, [email, hasEmail]);
 
- // STEP3: Fetch balance only (separate from joined events)
-const loadBalanceOnly = useCallback(async () => {
-  if (!hasEmail) {
-    setBalanceCents(null);
-    return;
-  }
-  try {
-    setBalLoading(true);
-    console.log('[Profile][Balance] fetching for:', email);
-    const b = await getBalance(email);
-    console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
-    setBalanceCents(b as any);
-  } catch (e: any) {
-    console.log('[Profile][Balance] error:', e?.message || e);
-    Alert.alert('Error', e?.message || 'Failed to fetch balance');
-  } finally {
-    setBalLoading(false);
-  }
-}, [email, hasEmail]);
+  // Fetch balance only (separate from joined events)
+  const loadBalanceOnly = useCallback(async () => {
+    if (!hasEmail) {
+      setBalanceCents(null);
+      return;
+    }
+    try {
+      setBalLoading(true);
+      console.log('[Profile][Balance] fetching for:', email);
+      const b = await api.getBalance(email);
+      console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
+      setBalanceCents(b as any);
+    } catch (e: any) {
+      console.log('[Profile][Balance] error:', e?.message || e);
+      Alert.alert('Error', e?.message || 'Failed to fetch balance');
+    } finally {
+      setBalLoading(false);
+    }
+  }, [email, hasEmail]);
 
   useEffect(() => { load(); }, [load]);
   useFocusEffect(useCallback(() => {
     load();
-    loadBalanceOnly(); // STEP3: also pull fresh balance on focus
+    loadBalanceOnly(); // also pull fresh balance on focus
   }, [load, loadBalanceOnly]));
 
   useFocusEffect(
@@ -210,60 +248,59 @@ const loadBalanceOnly = useCallback(async () => {
   );
 
   // Robust, single-shot Profile unjoin (guarded against double-fire)
-const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
-  if (!email) { Alert.alert('Sign in', 'Please sign in to unjoin.'); return; }
+  const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
+    if (!email) { Alert.alert('Sign in', 'Please sign in to unjoin.'); return; }
 
-  if (isUnjoining(ev.id)) {
-    console.log('[Profile][unjoin] BLOCKED duplicate tap for', ev.id);
-    return;
-  }
-
-  // mark busy
-  setUnjoiningSet(prev => {
-    const next = new Set(prev);
-    next.add(ev.id);
-    return next;
-  });
-
-  const fee = Math.abs(Number(ev.fee) || 0);
-  console.log('[Profile][unjoin] START', { id: ev.id, email, fee });
-
-  try {
-    // 1) remove join on server (idempotent)
-    await api.unrecordJoin(ev.id, email);
-    console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
-
-    // 2) update local cache so Events tab respects the change
-    await setJoinedLocal(email, ev.id, false);
-    console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
-
-    // 3) do ONE refund
-    if (fee > 0) {
-      await grantCredits(email, fee * 100, `unjoin:${ev.id}`);
-      console.log('[Profile][unjoin] grantCredits OK', ev.id, fee * 100);
+    if (isUnjoining(ev.id)) {
+      console.log('[Profile][unjoin] BLOCKED duplicate tap for', ev.id);
+      return;
     }
 
-    // 4) update UI + balance
-    setJoinedIds(prev => prev.filter(id => id !== ev.id));
-    const cents = await getBalance(email).catch(() => null);
-    if (typeof cents === 'number') setBalanceCents(cents as any);
-
-    Alert.alert('Unjoined', `Refunded $${fee}.`);
-  } catch (e: any) {
-    console.log('[Profile][unjoin] ERROR', e);
-    Alert.alert('Failed', e?.message || 'Could not unjoin');
-  } finally {
-    // clear busy
+    // mark busy
     setUnjoiningSet(prev => {
       const next = new Set(prev);
-      next.delete(ev.id);
+      next.add(ev.id);
       return next;
     });
-    console.log('[Profile][unjoin] END', ev.id);
-  }
-  }, [email, getBalance, grantCredits]
-);
-  
+
+    const fee = Math.abs(Number(ev.fee) || 0);
+    console.log('[Profile][unjoin] START', { id: ev.id, email, fee });
+
+    try {
+      // 1) remove join on server (idempotent)
+      await api.unrecordJoin(ev.id, email);
+      console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
+
+      // 2) update local cache so Events tab respects the change
+      await setJoinedLocal(email, ev.id, false);
+      console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
+
+      // 3) do ONE refund
+      if (fee > 0) {
+        await api.grantCredits(email, fee * 100, `unjoin:${ev.id}`);
+        console.log('[Profile][unjoin] grantCredits OK', ev.id, fee * 100);
+      }
+
+      // 4) update UI + balance
+      setJoinedIds(prev => prev.filter(id => id !== ev.id));
+      const cents = await api.getBalance(email).catch(() => null);
+      if (typeof cents === 'number') setBalanceCents(cents as any);
+
+      Alert.alert('Unjoined', `Refunded $${fee}.`);
+    } catch (e: any) {
+      console.log('[Profile][unjoin] ERROR', e);
+      Alert.alert('Failed', e?.message || 'Could not unjoin');
+    } finally {
+      // clear busy
+      setUnjoiningSet(prev => {
+        const next = new Set(prev);
+        next.delete(ev.id);
+        return next;
+      });
+      console.log('[Profile][unjoin] END', ev.id);
+    }
+  }, [email, isUnjoining]);
+
   const rows = useMemo(() => {
     console.log('[Profile][hydrate] joinedIds =', joinedIds);
     let events = hydrate(joinedIds);
@@ -297,17 +334,16 @@ const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: numb
         {hasEmail ? `Signed in as ${email}` : 'Signed out — sign in to join events and manage balance.'}
       </Text>
 
-
       {/* Balance Card */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
-        <Text style={s.balanceText}>
-          {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `$${balanceDollars}`)}
-        </Text>
-        <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
-          <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
-        </Pressable>
+          <Text style={s.balanceText}>
+            {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `$${balanceDollars}`)}
+          </Text>
+          <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+            <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
+          </Pressable>
         </View>
         {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
       </View>
@@ -374,7 +410,6 @@ const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: numb
 
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
-    
     <Pressable onPress={onPress} style={({ pressed }) => [ s.chip, active && s.chipActive, pressed && { opacity: 0.9 } ]} hitSlop={8}>
       <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
     </Pressable>
@@ -455,4 +490,12 @@ const s = StyleSheet.create({
     backgroundColor: 'transparent'
   },
   unBtnText: { color: colors.ORANGE, fontWeight: '800' },
+
+  // --- History styles (used soon) ---
+  histRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
+  histNote: { color: colors.TEXT, flex: 1, marginRight: 12, fontSize: 13 },
+  histAmt: { fontWeight: '800', fontSize: 13 },
+  amtPos: { color: '#4CD964' },
+  amtNeg: { color: '#FF453A' },
+  sectionLabel: { color: colors.MUTED_TEXT, fontSize: 12, fontWeight: '800', marginBottom: 6 }
 });
