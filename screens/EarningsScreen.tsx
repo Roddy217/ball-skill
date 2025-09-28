@@ -1,143 +1,87 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Alert, Linking } from 'react-native';
+// screens/EarningsScreen.tsx
+import React, { useMemo, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
-import { getBalance, getConnectStatus, startConnectOnboarding } from '../services/api';
 import { useAuth } from '../providers/AuthProvider';
+import bank from '../services/balanceService';
 
 export default function EarningsScreen() {
   const { user } = useAuth();
   const hasEmail = !!(user && !user.isAnonymous && user.email);
   const email = hasEmail ? String(user.email).toLowerCase() : '';
 
-  const [loading, setLoading] = useState(true);
-  const [balance, setBalance] = useState<number | null>(null);
-  const [status, setStatus] = useState<{ has: boolean; payouts: boolean; acct?: string; due?: string[] }>({ has: false, payouts: false });
+  const [loading, setLoading] = useState(false);
+  const [cents, setCents] = useState<number | null>(null);
 
-  const load = useCallback(async () => {
+  const dollars = useMemo(
+    () => (cents != null ? (cents / 100).toFixed(2) : null),
+    [cents]
+  );
+
+  const refresh = useCallback(async (reason: string = 'earnings-refresh') => {
+    if (!hasEmail) { setCents(null); return; }
     setLoading(true);
     try {
-      if (!email) {
-        // Not signed in with email — clear values and stop loading
-        setBalance(null);
-        setStatus({ has: false, payouts: false, acct: undefined, due: [] });
-        return;
-      }
-      const [bal, st] = await Promise.all([getBalance(email), getConnectStatus(email)]);
-      setBalance(bal);
-      setStatus({
-        has: !!st?.hasAccount,
-        payouts: !!st?.payouts_enabled,
-        acct: st?.accountId,
-        due: st?.requirements_due || [],
-      });
-    } catch (e) {
-      Alert.alert('Earnings error', (e as any)?.message || 'Failed to load earnings');
+      console.log('[Earnings] refresh for', email, 'reason=', reason);
+      await bank.refresh(email, reason);          // pull from server into central cache
+      const v = await bank.get(email);            // read from central cache
+      setCents(typeof v === 'number' ? v : Number(v) || 0);
+    } catch (e: any) {
+      console.log('[Earnings] refresh error', e?.message || e);
+      Alert.alert('Earnings', e?.message || 'Failed to load balance');
     } finally {
       setLoading(false);
     }
-  }, [email]);
+  }, [email, hasEmail]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
-
-  const onSetup = async () => {
-    if (!hasEmail) {
-      Alert.alert('Sign in required', 'Sign in with email to set up payouts.');
-      return;
-    }
-    const ret = await startConnectOnboarding(
-      email,
-      'https://dashboard.stripe.com/',
-      'https://dashboard.stripe.com/settings'
-    );
-    if (ret?.success && ret.url) {
-      const can = await Linking.canOpenURL(ret.url);
-      if (!can) {
-        Alert.alert('Open this link to continue', ret.url);
-        return;
-      }
-      try {
-        await Linking.openURL(ret.url);
-      } catch (e: any) {
-        Alert.alert('Open this link to continue', ret.url);
-      }
-    } else {
-      Alert.alert('Stripe error', ret?.error || 'Unable to start onboarding');
-    }
-  };
-
-  const dollars = balance != null ? (balance / 100).toFixed(2) : null;
+  // Refresh whenever this screen gains focus
+  useFocusEffect(React.useCallback(() => {
+    refresh('earnings-focus');
+  }, [refresh]));
 
   return (
-    <View style={s.container}>
+    <ScrollView style={s.container} contentContainerStyle={s.content}>
       <Text style={s.h1}>Earnings</Text>
 
-      {status.has && !status.payouts && (
-        <View style={s.banner}>
-          <Text style={s.bannerTitle}>Action needed to enable payouts</Text>
-          {!!status.due?.length && <Text style={s.bannerBody}>Missing: {status.due.join(', ')}</Text>}
-          <Pressable onPress={onSetup} style={({ pressed }) => [s.bannerBtn, pressed && { opacity: 0.9 }]}>
-            <Text style={s.bannerBtnText}>Continue onboarding</Text>
-          </Pressable>
+      {!hasEmail ? (
+        <View style={s.card}>
+          <Text style={s.label}>Balance</Text>
+          <Text style={s.hint}>Sign in with an email account to view your balance.</Text>
+        </View>
+      ) : (
+        <View style={s.card}>
+          <Text style={s.label}>Balance</Text>
+          <View style={s.row}>
+            <Text style={s.balance}>{dollars == null ? '—' : `$${dollars}`}</Text>
+            <Pressable
+              onPress={() => refresh('earnings-tap')}
+              disabled={loading}
+              style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }, loading && s.refreshBtnDisabled]}
+            >
+              {loading ? (
+                <ActivityIndicator color={colors.WHITE} />
+              ) : (
+                <Text style={s.refreshText}>Refresh</Text>
+              )}
+            </Pressable>
+          </View>
+          <Text style={s.note}>This is the same balance used for event joins and admin grants/deductions.</Text>
         </View>
       )}
 
       <View style={s.card}>
-        <Text style={s.label}>Balance</Text>
-        {loading ? (
-          <ActivityIndicator />
-        ) : (
-          <Text style={s.balance}>
-            {balance == null ? '—' : `${balance} credits${dollars ? ` ($${dollars})` : ''}`}
-          </Text>
-        )}
-      </View>
-
-      <View style={s.card}>
         <Text style={s.label}>Payouts</Text>
-        {loading ? (
-          <ActivityIndicator />
-        ) : status.has ? (
-          <View>
-            <Text style={s.row}>Account: <Text style={s.bold}>{status.acct}</Text></Text>
-            <Text style={s.row}>Payouts: <Text style={s.bold}>{status.payouts ? 'Enabled' : 'Pending'}</Text></Text>
-            {!!status.due?.length && <Text style={s.due}>Requirements due: {status.due.join(', ')}</Text>}
-            {!status.payouts && (
-              <Pressable onPress={onSetup} style={({ pressed }) => [s.btn, pressed && { opacity: 0.9 }]}>
-                <Text style={s.btnText}>Continue onboarding</Text>
-              </Pressable>
-            )}
-          </View>
-        ) : (
-          <Pressable onPress={onSetup} style={({ pressed }) => [s.btn, pressed && { opacity: 0.9 }]}>
-            <Text style={s.btnText}>Set up payouts (Stripe)</Text>
-          </Pressable>
-        )}
+        <Text style={s.hint}>Stripe Connect onboarding will be added next.</Text>
       </View>
-
-      <Pressable onPress={load} style={({ pressed }) => [s.ghost, pressed && { opacity: 0.9 }]}>
-        <Text style={s.ghostText}>Refresh</Text>
-      </Pressable>
-    </View>
+    </ScrollView>
   );
 }
 
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.CANVAS, padding: 16, gap: 12 },
-  h1: { color: colors.TEXT, fontWeight: '800', fontSize: 22, marginBottom: 8 },
-
-  banner: {
-    backgroundColor: '#1f140d',
-    borderColor: colors.ORANGE,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    padding: 14,
-    gap: 8,
-  },
-  bannerTitle: { color: colors.ORANGE, fontWeight: '800' },
-  bannerBody: { color: colors.MUTED_TEXT },
-  bannerBtn: { alignSelf: 'flex-start', backgroundColor: colors.ORANGE, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10 },
-  bannerBtnText: { color: colors.WHITE, fontWeight: '800' },
+  container: { flex: 1, backgroundColor: colors.CANVAS },
+  content: { padding: 16, paddingBottom: 24 },
+  h1: { color: colors.TEXT, fontSize: 22, fontWeight: '800', marginBottom: 8 },
 
   card: {
     backgroundColor: colors.SURFACE,
@@ -145,6 +89,7 @@ const s = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 12,
     padding: 14,
+    marginTop: 12,
     gap: 8,
     shadowColor: '#000',
     shadowOpacity: 0.25,
@@ -152,13 +97,15 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 3,
   },
+
   label: { color: colors.MUTED_TEXT, fontSize: 12 },
-  balance: { color: colors.TEXT, fontSize: 20, fontWeight: '800' },
-  row: { color: colors.TEXT, fontSize: 14, marginBottom: 4 },
-  bold: { fontWeight: '800', color: colors.TEXT },
-  due: { color: colors.MUTED_TEXT, fontSize: 12, marginBottom: 8 },
-  btn: { backgroundColor: colors.ORANGE, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
-  btnText: { color: colors.WHITE, fontWeight: '800', fontSize: 14 },
-  ghost: { borderRadius: 10, borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, paddingVertical: 10, alignItems: 'center' },
-  ghostText: { color: colors.TEXT, fontWeight: '700' },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  balance: { color: colors.TEXT, fontSize: 28, fontWeight: '900' },
+
+  refreshBtn: { backgroundColor: colors.ORANGE, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12 },
+  refreshBtnDisabled: { opacity: 0.7 },
+  refreshText: { color: colors.WHITE, fontWeight: '800' },
+
+  hint: { color: colors.MUTED_TEXT },
+  note: { color: colors.MUTED_TEXT, marginTop: 6 },
 });

@@ -5,6 +5,7 @@ import { StyleSheet } from 'react-native';
 import { AuthProvider, useAuth } from './providers/AuthProvider';
 import { Ionicons } from '@expo/vector-icons';
 import HeaderSignOut from './components/HeaderSignOut';
+import { bank } from './services/balanceService';
 
 const ORANGE = '#FF6600';
 
@@ -12,11 +13,24 @@ const DashboardScreen = require('./screens/DashboardScreen').default;
 const EventsScreen = require('./screens/EventsScreen').default;
 const AdminScreen = require('./screens/AdminScreen').default;
 const ProfileScreen = require('./screens/ProfileScreen').default;
+const EarningsScreen = require('./screens/EarningsScreen').default;
 
 const Tab = createBottomTabNavigator();
 
 function Tabs() {
-  const { isAdmin } = useAuth() as any; // safe if isAdmin exists; otherwise will be undefined
+  const { user, isAdmin } = useAuth() as any; // `isAdmin` may be undefined on non-admins
+
+  // Log balance notifications for the signed‑in user only
+  React.useEffect(() => {
+    if (!user?.email) return;
+    const myEmail = String(user.email).toLowerCase();
+    const unsub = bank.subscribe(({ email, balanceCents, source }) => {
+      if (email === myEmail) {
+        console.log('[bank][notify][me]', email, balanceCents, source || '');
+      }
+    });
+    return unsub;
+  }, [user?.email]);
 
   return (
     <Tab.Navigator
@@ -33,6 +47,7 @@ function Tabs() {
           const map: Record<string, any> = {
             Dashboard: focused ? 'grid' : 'grid-outline',
             Events: focused ? 'trophy' : 'trophy-outline',
+            Earnings: focused ? 'card' : 'card-outline',
             Profile: focused ? 'person' : 'person-outline',
             Admin: focused ? 'settings' : 'settings-outline',
           };
@@ -43,6 +58,7 @@ function Tabs() {
     >
       <Tab.Screen name="Dashboard" component={DashboardScreen} />
       <Tab.Screen name="Events" component={EventsScreen} />
+      <Tab.Screen name="Earnings" component={EarningsScreen} />
       {isAdmin && <Tab.Screen name="Admin" component={AdminScreen} />}
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
@@ -50,6 +66,14 @@ function Tabs() {
 }
 
 export default function App() {
+  // Global logger: any balance refresh for any user
+  React.useEffect(() => {
+    const unsub = bank.subscribe(({ email, balanceCents, source }) => {
+      console.log('[bank][notify]', email, balanceCents, source || '');
+    });
+    return unsub;
+  }, []);
+
   return (
     <NavigationContainer>
       <AuthProvider>
