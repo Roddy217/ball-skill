@@ -38,3 +38,6 @@ yarn-error.*
 
 server/.env
 .env
+
+# editor swaps
+*.swp
