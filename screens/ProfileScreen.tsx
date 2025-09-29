@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, ActivityIndicator, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, ActivityIndicator, Alert, TextInput, Image } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system/legacy';
+import { getAvatarUri, saveAvatarUri, clearAvatar, ensureAvatarPath } from '../services/avatarStore';
 import { useAuth } from '../providers/AuthProvider';
 import * as api from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
@@ -162,6 +166,58 @@ export default function ProfileScreen() {
 
   const [loading, setLoading] = useState(false);
   const [balanceCents, setBalanceCents] = useState<number | null>(null);
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [showUrlBox, setShowUrlBox] = useState(false);
+  const [urlText, setUrlText] = useState('');
+  const [urlCheck, setUrlCheck] = useState<'idle'|'checking'|'ok'|'bad'>('idle');
+  const [urlErr, setUrlErr] = useState<string>('');
+  // Validate a remote image URL via HEAD (if available) then fallback to Image.getSize
+  const validateImageUrl = useCallback(async (url: string): Promise<{ ok: boolean; reason?: string }> => {
+    try {
+      // basic sanity
+      if (!/^https?:\/\//i.test(url)) return { ok: false, reason: 'URL must start with http(s)://' };
+      // try HEAD first (some servers may not allow it)
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(url, { method: 'HEAD', headers: { Accept: 'image/*' }, signal: controller.signal as any });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (ct.startsWith('image/')) return { ok: true };
+          // if content-type is missing, still attempt an image probe
+        }
+      } catch {/* ignore, fallback below */}
+      // Fallback: probe with Image.getSize
+      return await new Promise(resolve => {
+        Image.getSize(
+          url,
+          () => resolve({ ok: true }),
+          () => resolve({ ok: false, reason: 'Could not load image' })
+        );
+      });
+    } catch (e: any) {
+      return { ok: false, reason: e?.message || 'Unknown error' };
+    }
+  }, []);
+
+  // Debounce URL validation as user types
+  useEffect(() => {
+    if (!showUrlBox) { setUrlCheck('idle'); setUrlErr(''); return; }
+    const raw = urlText.trim();
+    if (!raw) { setUrlCheck('idle'); setUrlErr(''); return; }
+    let cancelled = false;
+    setUrlCheck('checking');
+    setUrlErr('');
+    const t = setTimeout(async () => {
+      const res = await validateImageUrl(raw);
+      if (cancelled) return;
+      if (res.ok) { setUrlCheck('ok'); setUrlErr(''); }
+      else { setUrlCheck('bad'); setUrlErr(res.reason || 'Not an image URL'); }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [urlText, showUrlBox, validateImageUrl]);
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -370,6 +426,16 @@ export default function ProfileScreen() {
     }, [email, loadHistory])
   );
 
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!hasEmail) { setAvatarUri(null); return; }
+      const uri = await getAvatarUri(email);
+      if (alive) setAvatarUri(uri);
+    })();
+    return () => { alive = false; };
+  }, [email, hasEmail]);
+
   // Robust, single-shot Profile unjoin (guarded against double-fire)
   const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
     if (!email) { Alert.alert('Sign in', 'Please sign in to unjoin.'); return; }
@@ -483,6 +549,112 @@ export default function ProfileScreen() {
     }
   }, [load, loadHistory]);
 
+  const onChangePhoto = useCallback(async () => {
+    if (!hasEmail) {
+      Alert.alert('Profile photo', 'Please sign in to change your photo.');
+      return;
+    }
+    try {
+      setAvatarBusy(true);
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Please allow photo library access.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 1, // we’ll compress ourselves
+      });
+      if (res.canceled) return;
+
+      const src = res.assets?.[0]?.uri;
+      if (!src) return;
+
+      // Compress & resize to a sane square (max 512)
+      const out = await ImageManipulator.manipulateAsync(
+        src,
+        [{ resize: { width: 512, height: 512 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+
+      // Persist to app storage with a stable filename
+      const dest = await ensureAvatarPath(email);
+      try { await FileSystem.deleteAsync(dest, { idempotent: true }); } catch {}
+      await FileSystem.copyAsync({ from: out.uri, to: dest });
+
+      await saveAvatarUri(email, dest);
+      setAvatarUri(dest);
+    } catch (e: any) {
+      console.log('[Profile][avatar] error', e?.message || e);
+      Alert.alert('Photo', 'Could not set profile photo. Please try again.');
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [email, hasEmail]);
+
+  const onSetPhotoFromUrl = useCallback(async () => {
+    if (!hasEmail) {
+      Alert.alert('Profile photo', 'Please sign in to change your photo.');
+      return;
+    }
+    const url = urlText.trim();
+    if (!url) {
+      Alert.alert('Enter a URL', 'Paste a direct image URL (jpg/png).');
+      return;
+    }
+    if (urlCheck !== 'ok') {
+      Alert.alert('Invalid URL', urlErr || 'Please enter a direct image URL (.jpg/.png).');
+      return;
+    }
+    try {
+      setAvatarBusy(true);
+
+      // Download to cache
+      const tmp = FileSystem.cacheDirectory + 'avatar_remote.jpg';
+      try { await FileSystem.deleteAsync(tmp, { idempotent: true }); } catch {}
+      const dl = await FileSystem.downloadAsync(url, tmp);
+
+      // Resize/compress to a square
+      const out = await ImageManipulator.manipulateAsync(
+        dl.uri,
+        [{ resize: { width: 512, height: 512 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+
+      // Persist to stable location
+      const dest = await ensureAvatarPath(email);
+      try { await FileSystem.deleteAsync(dest, { idempotent: true }); } catch {}
+      await FileSystem.copyAsync({ from: out.uri, to: dest });
+
+      await saveAvatarUri(email, dest);
+      setAvatarUri(dest);
+      setShowUrlBox(false);
+      setUrlText('');
+    } catch (e: any) {
+      console.log('[Profile][avatar:url] error', e?.message || e);
+      Alert.alert('Photo', 'Could not load image from URL. Make sure it is a direct image link (jpg/png).');
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [email, hasEmail, urlText, urlCheck, urlErr]);
+  
+  const onRemovePhoto = useCallback(async () => {
+    if (!hasEmail) return;
+    try {
+      setAvatarBusy(true);
+      const dest = await ensureAvatarPath(email);
+      try { await FileSystem.deleteAsync(dest, { idempotent: true }); } catch {}
+      await clearAvatar(email);
+      setAvatarUri(null);
+    } catch (e) {
+      // ignore
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [email, hasEmail]);
+
   return (
     <ScrollView
       style={s.container}
@@ -493,9 +665,105 @@ export default function ProfileScreen() {
       <Text style={s.sub}>
         {hasEmail ? `Signed in as ${email}` : 'Signed out — sign in to join events and manage balance.'}
       </Text>
+      
+
+{/* Profile Photo */}
+<View style={s.card}>
+  <Text style={s.cardTitle}>Profile photo</Text>
+  <View style={s.avatarRow}>
+    {avatarUri ? (
+      <View style={s.avatarWrap}>
+        <Image source={{ uri: avatarUri }} style={s.avatarImg} />
+      </View>
+    ) : (
+      <View style={[s.avatarWrap, s.avatarPlaceholder]}>
+        <Text style={s.avatarInitial}>{(user?.email || 'U').charAt(0).toUpperCase()}</Text>
+      </View>
+    )}
+
+    <View style={{ flex: 1, marginLeft: 14 }}>
+      {/* use s.hint or s.subtle if you added it */}
+      <Text style={s.hint}>Use a clear headshot. We’ll compress it automatically.</Text>
+
+      <View style={{ flexDirection: 'row', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+        <Pressable
+          disabled={avatarBusy}
+          onPress={onChangePhoto}
+          style={({ pressed }) => [s.chip, pressed && { opacity: 0.9 }]}
+        >
+          {avatarBusy ? <ActivityIndicator /> : <Text style={s.chipText}>Change photo</Text>}
+        </Pressable>
+
+        {avatarUri ? (
+          <Pressable
+            disabled={avatarBusy}
+            onPress={onRemovePhoto}
+            style={({ pressed }) => [s.chipOutline, pressed && { opacity: 0.9 }]}
+          >
+            <Text style={s.chipOutlineText}>Remove</Text>
+          </Pressable>
+        ) : null}
+
+        <Pressable
+          disabled={avatarBusy}
+          onPress={() => setShowUrlBox(v => !v)}
+          style={({ pressed }) => [s.chipOutline, pressed && { opacity: 0.9 }]}
+        >
+          <Text style={s.chipOutlineText}>{showUrlBox ? 'Hide URL' : 'Use URL'}</Text>
+        </Pressable>
+      </View>
+
+      {showUrlBox && (
+        <View style={{ marginTop: 10 }}>
+          <TextInput
+            placeholder="https://example.com/photo.jpg"
+            placeholderTextColor={colors.MUTED_TEXT}
+            value={urlText}
+            onChangeText={setUrlText}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={s.searchInput}
+          />
+          {/* live validation feedback */}
+          {urlCheck === 'ok' && (
+            <Text style={[s.hint, { marginTop: 4 }]}>Looks good ✓</Text>
+          )}
+          {urlCheck === 'checking' && (
+            <Text style={[s.hint, { marginTop: 4 }]}>Checking…</Text>
+          )}
+          {urlCheck === 'bad' && (
+            <Text style={[s.hint, { marginTop: 4, color: '#FF453A' }]}>{urlErr}</Text>
+          )}
+
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+            <Pressable
+              disabled={avatarBusy || urlCheck !== 'ok'}
+              onPress={onSetPhotoFromUrl}
+              style={({ pressed }) => [
+                s.chip,
+                pressed && { opacity: 0.9 },
+                (avatarBusy || urlCheck !== 'ok') && { opacity: 0.5 }
+              ]}
+            >
+              {avatarBusy ? <ActivityIndicator /> : <Text style={s.chipText}>Save URL</Text>}
+            </Pressable>
+            <Pressable
+              disabled={avatarBusy}
+              onPress={() => { setShowUrlBox(false); setUrlText(''); }}
+              style={({ pressed }) => [s.chipOutline, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={s.chipOutlineText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+        </View>
+      </View>
+    </View>
 
       {/* Balance Card */}
       <View style={s.card}>
+        
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
           <Text style={s.balanceText}>
@@ -714,6 +982,7 @@ const s = StyleSheet.create({
   content: { padding: 16, paddingBottom: 24 },
   h1: { color: colors.TEXT, fontSize: 22, fontWeight: '800' },
   sub: { color: colors.MUTED_TEXT, marginTop: 4, marginBottom: 14 },
+  subtle: { color: colors.MUTED_TEXT, fontSize: 12 },
 
   card: {
     backgroundColor: colors.SURFACE,
@@ -743,6 +1012,32 @@ const s = StyleSheet.create({
   chipActive: { backgroundColor: colors.ORANGE, borderColor: colors.ORANGE },
   chipText: { color: colors.TEXT, fontSize: 12, fontWeight: '700' },
   chipTextActive: { color: colors.WHITE },
+
+  avatarRow: { flexDirection: 'row', alignItems: 'center' },
+  avatarWrap: {
+    width: 88,
+    height: 88,
+    borderRadius: 999,
+    overflow: 'hidden',
+    borderColor: '#2a2a2a',
+    borderWidth: 1,
+    backgroundColor: '#111',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarImg: { width: '100%', height: '100%' },
+  avatarPlaceholder: { backgroundColor: '#1a1a1a' },
+  avatarInitial: { color: '#fff', fontWeight: '900', fontSize: 32 },
+  
+  chipOutline: {
+    borderColor: '#3a3a3a',
+    borderWidth: 1,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: 'transparent',
+  },
+  chipOutlineText: { color: colors.WHITE, fontWeight: '800', fontSize: 13, letterSpacing: 0.3 },
 
   searchInput: {
     backgroundColor: '#131316',
