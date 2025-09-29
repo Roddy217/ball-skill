@@ -13,6 +13,24 @@ import IdChip from '../components/IdChip';
 
 console.log('[Profile] api keys:', Object.keys(api));
 
+// ---- Avatar URL validation config ----
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+const ALLOWED_EXTS = ['.jpg', '.jpeg', '.png', '.webp'];
+const ALLOWED_CT_PREFIX = 'image/';
+
+function extFromUrl(u: string): string {
+  try {
+    const p = new URL(u).pathname.toLowerCase();
+    return ALLOWED_EXTS.find(ext => p.endsWith(ext)) || '';
+  } catch {
+    return '';
+  }
+}
+function looksPrivateHost(host: string): boolean {
+  // blocks localhost, 127.*, 10.*, 192.168.*, 172.16-31.*
+  return /(^localhost$)|(^127\.)|(^10\.)|(^192\.168\.)|(^172\.(1[6-9]|2\d|3[0-1])\.)/i.test(host);
+}
+
 async function normalizeJoins(email: string) {
   try {
     const raw = await api.getUserJoins(email);
@@ -172,52 +190,7 @@ export default function ProfileScreen() {
   const [urlText, setUrlText] = useState('');
   const [urlCheck, setUrlCheck] = useState<'idle'|'checking'|'ok'|'bad'>('idle');
   const [urlErr, setUrlErr] = useState<string>('');
-  // Validate a remote image URL via HEAD (if available) then fallback to Image.getSize
-  const validateImageUrl = useCallback(async (url: string): Promise<{ ok: boolean; reason?: string }> => {
-    try {
-      // basic sanity
-      if (!/^https?:\/\//i.test(url)) return { ok: false, reason: 'URL must start with http(s)://' };
-      // try HEAD first (some servers may not allow it)
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(url, { method: 'HEAD', headers: { Accept: 'image/*' }, signal: controller.signal as any });
-        clearTimeout(timeout);
-        if (res.ok) {
-          const ct = (res.headers.get('content-type') || '').toLowerCase();
-          if (ct.startsWith('image/')) return { ok: true };
-          // if content-type is missing, still attempt an image probe
-        }
-      } catch {/* ignore, fallback below */}
-      // Fallback: probe with Image.getSize
-      return await new Promise(resolve => {
-        Image.getSize(
-          url,
-          () => resolve({ ok: true }),
-          () => resolve({ ok: false, reason: 'Could not load image' })
-        );
-      });
-    } catch (e: any) {
-      return { ok: false, reason: e?.message || 'Unknown error' };
-    }
-  }, []);
 
-  // Debounce URL validation as user types
-  useEffect(() => {
-    if (!showUrlBox) { setUrlCheck('idle'); setUrlErr(''); return; }
-    const raw = urlText.trim();
-    if (!raw) { setUrlCheck('idle'); setUrlErr(''); return; }
-    let cancelled = false;
-    setUrlCheck('checking');
-    setUrlErr('');
-    const t = setTimeout(async () => {
-      const res = await validateImageUrl(raw);
-      if (cancelled) return;
-      if (res.ok) { setUrlCheck('ok'); setUrlErr(''); }
-      else { setUrlCheck('bad'); setUrlErr(res.reason || 'Not an image URL'); }
-    }, 400);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [urlText, showUrlBox, validateImageUrl]);
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -593,6 +566,67 @@ export default function ProfileScreen() {
       setAvatarBusy(false);
     }
   }, [email, hasEmail]);
+// Validates an image URL using https requirement, extension, HEAD size/type, and an image probe
+const validateImageUrl = useCallback(async (url: string): Promise<{ ok: boolean; reason?: string }> => {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return { ok: false, reason: 'Use an https:// image URL' };
+    if (looksPrivateHost(u.hostname)) return { ok: false, reason: 'Private/local hosts are not allowed' };
+
+    const ext = extFromUrl(url);
+    if (!ext) return { ok: false, reason: `Allowed types: ${ALLOWED_EXTS.join(', ')}` };
+
+    // Try HEAD for content-type/length (many CDNs support this; if not, we fallback)
+    let contentType = '';
+    let contentLength = 0;
+    try {
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 6000);
+      const res = await fetch(url, { method: 'HEAD', signal: ac.signal });
+      clearTimeout(to);
+      if (res.ok) {
+        contentType = String(res.headers.get('content-type') || '');
+        contentLength = parseInt(String(res.headers.get('content-length') || '0'), 10) || 0;
+      }
+    } catch {
+      // ignore; we'll probe with Image.getSize
+    }
+
+    if (contentType && !contentType.startsWith(ALLOWED_CT_PREFIX)) {
+      return { ok: false, reason: `Not an image (Content-Type: ${contentType || 'unknown'})` };
+    }
+    if (contentLength && contentLength > MAX_IMAGE_BYTES) {
+      return { ok: false, reason: `Image too large (> ${(MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(0)}MB)` };
+    }
+
+    // Fallback probe: try to load dimensions
+    await new Promise<void>((resolve, reject) => {
+      Image.getSize(url, () => resolve(), () => reject(new Error('not-loadable')));
+    });
+
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'Invalid URL' };
+  }
+}, []);
+
+// Debounced validation as the user types
+useEffect(() => {
+  if (!showUrlBox) return;
+  const u = urlText.trim();
+  if (!u) { setUrlCheck('idle'); setUrlErr(''); return; }
+
+  setUrlCheck('checking');
+  let cancelled = false;
+  const id = setTimeout(async () => {
+    const res = await validateImageUrl(u);
+    if (cancelled) return;
+    setUrlCheck(res.ok ? 'ok' : 'bad');
+    setUrlErr(res.ok ? '' : (res.reason || 'Not a valid image URL'));
+  }, 450);
+
+  return () => { cancelled = true; clearTimeout(id); };
+}, [urlText, showUrlBox, validateImageUrl]);
 
   const onSetPhotoFromUrl = useCallback(async () => {
     if (!hasEmail) {
@@ -600,6 +634,18 @@ export default function ProfileScreen() {
       return;
     }
     const url = urlText.trim();
+    // If not validated yet, validate once here so one tap always works
+if (urlCheck !== 'ok') {
+  const res = await validateImageUrl(url);
+  if (!res.ok) {
+    setUrlCheck('bad');
+    setUrlErr(res.reason || 'Invalid image URL');
+    Alert.alert('Invalid URL', res.reason || 'Please use a direct image link (jpg/png/webp, ≤5MB, https).');
+    return;
+  }
+  setUrlCheck('ok');
+}
+
     if (!url) {
       Alert.alert('Enter a URL', 'Paste a direct image URL (jpg/png).');
       return;
@@ -693,7 +739,6 @@ export default function ProfileScreen() {
         >
           {avatarBusy ? <ActivityIndicator /> : <Text style={s.chipText}>Change photo</Text>}
         </Pressable>
-
         {avatarUri ? (
           <Pressable
             disabled={avatarBusy}
@@ -703,7 +748,6 @@ export default function ProfileScreen() {
             <Text style={s.chipOutlineText}>Remove</Text>
           </Pressable>
         ) : null}
-
         <Pressable
           disabled={avatarBusy}
           onPress={() => setShowUrlBox(v => !v)}
@@ -724,17 +768,19 @@ export default function ProfileScreen() {
             autoCorrect={false}
             style={s.searchInput}
           />
-          {/* live validation feedback */}
-          {urlCheck === 'ok' && (
-            <Text style={[s.hint, { marginTop: 4 }]}>Looks good ✓</Text>
-          )}
           {urlCheck === 'checking' && (
-            <Text style={[s.hint, { marginTop: 4 }]}>Checking…</Text>
+            <Text style={s.hint}>Checking URL…</Text>
+          )}
+          {urlCheck === 'ok' && (
+            <Text style={[s.hint, { color: '#4CD964' }]}>
+              Looks good ✓ (image, ≤ {(MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(0)}MB)
+            </Text>
           )}
           {urlCheck === 'bad' && (
-            <Text style={[s.hint, { marginTop: 4, color: '#FF453A' }]}>{urlErr}</Text>
+            <Text style={[s.hint, { color: '#FF453A' }]}>
+              {urlErr || 'URL is not a valid image'}
+            </Text>
           )}
-
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
             <Pressable
               disabled={avatarBusy || urlCheck !== 'ok'}

@@ -197,31 +197,37 @@ useFocusEffect(
     }
 
     setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
-    try {
-      const fee = Math.abs(Number(evt.fee) || 0);
-      if (fee > 0) {
-        await api.grantCredits(userEmail, -(fee * 100), `join:${evt.id}`);
-      }
-      await api.recordJoin(evt.id, userEmail);
-      await setJoinedLocal(userEmail, evt.id, true);
+  try {
+  const fee = Math.abs(Number(evt.fee) || 0);
+  let debited = false;
 
-      // mark as joined locally
-      setJoinedMap(prev => {
-        const next = { ...prev, [evt.id]: true };
-        saveJoinedMap(userEmail, next).catch(() => {});
-        return next;
-      });
-      
+  // 1) Debit first (if applicable)
+  if (fee > 0) {
+    await api.grantCredits(userEmail, -(fee * 100), `join:${evt.id}`);
+    debited = true;
+  }
 
-      // fetch and show new balance (convert cents→dollars if needed)
-      const cents = await getBalance(userEmail);
-      const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
-      Alert.alert('Joined', `Fee: $${fee}\nNew balance: $${dollars}`);
-    } catch (e: any) {
-      Alert.alert('Join failed', e?.message || 'Unknown error');
-    } finally {
-      setJoiningMap(prev => ({ ...prev, [evt.id]: false }));
-    }
+  // 2) Record join on server
+  await api.recordJoin(evt.id, userEmail);
+
+  // 3) Persist local “joined” (AsyncStorage) and update in-memory map
+  await setJoinedLocal(userEmail, evt.id, true);
+  setJoinedMap(prev => ({ ...prev, [evt.id]: true })); // <-- no saveJoinedMap() here
+
+  // 4) Show fresh balance
+  const cents = await getBalance(userEmail);
+  const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
+  Alert.alert('Joined', `Fee: $${fee}\nNew balance: $${dollars}`);
+} catch (e: any) {
+  // Roll back debit if we charged but joining failed
+  try {
+    if (debited) await api.grantCredits(userEmail, (Math.abs(Number(evt.fee) || 0) * 100), `revert_join:${evt.id}`);
+  } catch {}
+
+  Alert.alert('Join failed', e?.message || 'Unknown error');
+} finally {
+  setJoiningMap(prev => ({ ...prev, [evt.id]: false }));
+}
   };
 
   // Chips header with API base badge
