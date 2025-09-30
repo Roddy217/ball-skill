@@ -6,6 +6,7 @@ import { useAuth } from '../providers/AuthProvider';
 import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory, applyCredits } from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
+import { Ionicons } from '@expo/vector-icons';
 
 async function normalizeJoins(email: string) {
   try {
@@ -257,7 +258,7 @@ export default function ProfileScreen() {
       // 5) also refresh transaction history so the refund shows immediately
       await loadHistory();
 
-      Alert.alert('Unjoined', `Refunded $${fee}.`);
+      Alert.alert('Unjoined', `Refunded ${fee}.`);
     } catch (e: any) {
       console.log('[Profile][unjoin] ERROR', e);
       Alert.alert('Failed', e?.message || 'Could not unjoin');
@@ -420,16 +421,85 @@ export default function ProfileScreen() {
 
       {/* Balance Card */}
       <View style={s.card}>
+      <View style={[s.cardHeaderRow, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+        <Text style={s.cardTitle}>Profile</Text>
+
+        <Pressable
+          onPress={() => Alert.alert('Messaging', 'In-app messaging is coming soon.')}
+          hitSlop={8}
+          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+          accessibilityLabel="Open messaging (coming soon)"
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors?.ORANGE || '#F97316'} />
+        </Pressable>
+      </View>
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
           <Text style={s.balanceText}>
-            {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `$${balanceDollars}`)}
+            {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `${balanceDollars}`)}
           </Text>
           <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
             <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
           </Pressable>
         </View>
         {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
+      </View>
+
+      {/* Joined Events */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Joined Events</Text>
+
+        <View style={s.filtersRow}>
+          <Chip label="All"        active={filter==='ALL'}       onPress={() => setFilter('ALL')} />
+          <Chip label="Soonest"    active={filter==='SOONEST'}   onPress={() => setFilter('SOONEST')} />
+          <Chip label="Newest"     active={filter==='NEWEST'}    onPress={() => setFilter('NEWEST')} />
+          <Chip label="In-Person"  active={filter==='IN_PERSON'} onPress={() => setFilter('IN_PERSON')} />
+          <Chip label="Online"     active={filter==='ONLINE'}    onPress={() => setFilter('ONLINE')} />
+        </View>
+
+        <TextInput
+          placeholder="Filter by title or ID"
+          placeholderTextColor={colors.MUTED_TEXT}
+          value={query}
+          onChangeText={setQuery}
+          style={s.searchInput}
+        />
+
+        {loading ? (
+          <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
+        ) : !hasEmail ? (
+          <Text style={s.hint}>Sign in to view and manage your joined events.</Text>
+        ) : rows.length === 0 ? (
+          <Text style={s.hint}>No joined events match your filters.</Text>
+        ) : (
+          <View style={{ gap: 10 }}>
+            {rows.map(ev => (
+              <View key={ev.id} style={s.joinItem}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
+                  <Text style={s.evMeta}>
+                    {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
+                  </Text>
+                  <View style={s.idRow}>
+                    <IdChip id={ev.id} withCopy />
+                    <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={() => onUnjoin(ev)}
+                  disabled={isUnjoining(ev.id)}
+                  style={({ pressed }) => [
+                    s.unBtn,
+                    isUnjoining(ev.id) && { opacity: 0.5 },
+                    pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={s.unBtnText}>Unjoin</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* Transactions */}
@@ -534,62 +604,6 @@ export default function ProfileScreen() {
         ))}
       </View>
 
-      {/* Joined Events */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Joined Events</Text>
-
-        <View style={s.filtersRow}>
-          <Chip label="All"        active={filter==='ALL'}       onPress={() => setFilter('ALL')} />
-          <Chip label="Soonest"    active={filter==='SOONEST'}   onPress={() => setFilter('SOONEST')} />
-          <Chip label="Newest"     active={filter==='NEWEST'}    onPress={() => setFilter('NEWEST')} />
-          <Chip label="In-Person"  active={filter==='IN_PERSON'} onPress={() => setFilter('IN_PERSON')} />
-          <Chip label="Online"     active={filter==='ONLINE'}    onPress={() => setFilter('ONLINE')} />
-        </View>
-
-        <TextInput
-          placeholder="Filter by title or ID"
-          placeholderTextColor={colors.MUTED_TEXT}
-          value={query}
-          onChangeText={setQuery}
-          style={s.searchInput}
-        />
-
-        {loading ? (
-          <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
-        ) : !hasEmail ? (
-          <Text style={s.hint}>Sign in to view and manage your joined events.</Text>
-        ) : rows.length === 0 ? (
-          <Text style={s.hint}>No joined events match your filters.</Text>
-        ) : (
-          <View style={{ gap: 10 }}>
-            {rows.map(ev => (
-              <View key={ev.id} style={s.joinItem}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
-                  <Text style={s.evMeta}>
-                    {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
-                  </Text>
-                  <View style={s.idRow}>
-                    <IdChip id={ev.id} withCopy />
-                    <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
-                  </View>
-                </View>
-                <Pressable
-                  onPress={() => onUnjoin(ev)}
-                  disabled={isUnjoining(ev.id)}
-                  style={({ pressed }) => [
-                    s.unBtn,
-                    isUnjoining(ev.id) && { opacity: 0.5 },
-                    pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
-                  ]}
-                >
-                  <Text style={s.unBtnText}>Unjoin</Text>
-                </Pressable>
-              </View>
-            ))}
-          </View>
-        )}
-      </View>
     </ScrollView>
   );
 }
@@ -625,6 +639,11 @@ const s = StyleSheet.create({
   hint: { color: colors.MUTED_TEXT },
 
   filtersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   chip: {
     backgroundColor: '#1b1b1e',
     borderColor: colors.BORDER,
