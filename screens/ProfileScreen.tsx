@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, ActivityIndicator, Alert, TextInput } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
-import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory, applyCredits } from '../services/api';
+import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory } from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 import { Ionicons } from '@expo/vector-icons';
@@ -113,6 +113,27 @@ export default function ProfileScreen() {
   const [txSort, setTxSort] = useState<'NEW' | 'OLD'>('NEW'); // NEW = newest first
   const [txQuery, setTxQuery] = useState<string>('');
   const [txLimit, setTxLimit] = useState<number>(20);
+  const [evLimit, setEvLimit] = useState<number>(10); // Joined Events visible count
+
+  // Sticky quick-nav + anchors
+  const scRef = useRef<any>(null);
+  const anchors = useRef<{ profile: number; balance: number; events: number; tx: number; create: number }>({
+    profile: 0, balance: 0, events: 0, tx: 0, create: 0,
+  });
+  const setAnchor = (key: keyof typeof anchors.current) =>
+    (e: any) => { anchors.current[key] = e?.nativeEvent?.layout?.y ?? 0; };
+
+  const scrollToAnchor = (key: keyof typeof anchors.current) => {
+    const y = Math.max(anchors.current[key] - 8, 0);
+    scRef.current?.scrollTo?.({ y, animated: true });
+  };
+
+  // Card collapse state
+  const [collapsed, setCollapsed] = useState<{ profile: boolean; balance: boolean; events: boolean; tx: boolean; create: boolean }>({
+    profile: false, balance: false, events: false, tx: false, create: false,
+  });
+  const toggleCollapse = (key: keyof typeof collapsed) =>
+    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
 
   // Prevent double-taps / duplicate refunds
   const [unjoiningSet, setUnjoiningSet] = useState<Set<string>>(new Set());
@@ -343,6 +364,7 @@ export default function ProfileScreen() {
     if (q) events = events.filter(e => e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q));
     return events;
   }, [joinedIds, filter, query, hydrate]);
+  const visibleEvents = useMemo(() => rows.slice(0, evLimit), [rows, evLimit]);
 
   const onUnjoin = useCallback((ev: CatalogEvent) => {
     handleProfileUnjoin(ev);
@@ -358,27 +380,6 @@ export default function ProfileScreen() {
     }
   }, [load, loadHistory]);
 
-  // Dev-only: quickly add a few demo transactions to verify UI updates end-to-end
-  const seedDemoTx = useCallback(async () => {
-    if (!hasEmail) { Alert.alert('Sign in', 'Please sign in to add demo transactions.'); return; }
-    try {
-      setHistLoading(true);
-      // +$10.00
-      await grantCredits(email, 1000, 'demo:credit +$10.00');
-      // -$5.00 (use applyCredits for a negative delta)
-      await applyCredits(email, -500, 'demo:debit -$5.00');
-      // +$25.00
-      await grantCredits(email, 2500, 'demo:credit +$25.00');
-      // refresh balance and history
-      await loadBalanceOnly();
-      await loadHistory();
-      Alert.alert('Demo transactions', 'Added 3 demo entries.');
-    } catch (e: any) {
-      Alert.alert('Demo failed', e?.message || String(e));
-    } finally {
-      setHistLoading(false);
-    }
-  }, [email, hasEmail, loadBalanceOnly, loadHistory]);
 
   // --- Time range helpers for TX filters ---
   function startOfDay(ts: number) {
@@ -410,6 +411,8 @@ export default function ProfileScreen() {
 
   return (
     <ScrollView
+      ref={scRef}
+      stickyHeaderIndices={[2]}
       style={s.container}
       contentContainerStyle={s.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.ORANGE} />}
@@ -419,11 +422,21 @@ export default function ProfileScreen() {
         {hasEmail ? `Signed in as ${email}` : 'Signed out — sign in to join events and manage balance.'}
       </Text>
 
+      {/* Sticky quick navigation */}
+      <View style={s.stickyWrap} onLayout={setAnchor('profile')}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.stickyRow}>
+          <Chip label="Profile"      onPress={() => scrollToAnchor('profile')} />
+          <Chip label="Balance"      onPress={() => scrollToAnchor('balance')} />
+          <Chip label="Events"       onPress={() => scrollToAnchor('events')} />
+          <Chip label="Transactions" onPress={() => scrollToAnchor('tx')} />
+          <Chip label="Create"       onPress={() => scrollToAnchor('create')} />
+        </ScrollView>
+      </View>
+
       {/* Profile Header (standalone card) */}
-      <View style={s.card}>
+      <View style={s.card} onLayout={setAnchor('profile')}>
         <View style={[s.cardHeaderRow, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
           <Text style={s.cardTitle}>Profile</Text>
-
           <Pressable
             onPress={() => Alert.alert('Messaging', 'In-app messaging is coming soon.')}
             hitSlop={8}
@@ -432,180 +445,232 @@ export default function ProfileScreen() {
           >
             <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors?.ORANGE || '#F97316'} />
           </Pressable>
+          <Pressable onPress={() => toggleCollapse('profile')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+            <Ionicons name={collapsed.profile ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
+          </Pressable>
         </View>
       </View>
 
       {/* Balance Card */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Balance</Text>
-        <View style={s.balanceRow}>
-          <Text style={s.balanceText}>
-            {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `${balanceDollars}`)}
-          </Text>
-          <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
-            <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
+      <View style={s.card} onLayout={setAnchor('balance')}>
+        <View style={s.cardHeaderRow}>
+          <Text style={s.cardTitle}>Balance</Text>
+          <Pressable onPress={() => toggleCollapse('balance')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+            <Ionicons name={collapsed.balance ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
           </Pressable>
         </View>
-        {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
+        {!collapsed.balance && (
+          <>
+            <View style={s.balanceRow}>
+              <Text style={s.balanceText}>
+                {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `${balanceDollars}`)}
+              </Text>
+              <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+                <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
+              </Pressable>
+            </View>
+            {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
+          </>
+        )}
       </View>
 
       {/* Joined Events */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Joined Events</Text>
-
-        <View style={s.filtersRow}>
-          <Chip label="All"        active={filter==='ALL'}       onPress={() => setFilter('ALL')} />
-          <Chip label="Soonest"    active={filter==='SOONEST'}   onPress={() => setFilter('SOONEST')} />
-          <Chip label="Newest"     active={filter==='NEWEST'}    onPress={() => setFilter('NEWEST')} />
-          <Chip label="In-Person"  active={filter==='IN_PERSON'} onPress={() => setFilter('IN_PERSON')} />
-          <Chip label="Online"     active={filter==='ONLINE'}    onPress={() => setFilter('ONLINE')} />
+      <View style={s.card} onLayout={setAnchor('events')}>
+        <View style={s.cardHeaderRow}>
+          <Text style={s.cardTitle}>Joined Events</Text>
+          <Pressable onPress={() => toggleCollapse('events')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+            <Ionicons name={collapsed.events ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
+          </Pressable>
         </View>
+        {!collapsed.events && (
+          <>
+            <View style={s.filtersRow}>
+              <Chip label="All"        active={filter==='ALL'}       onPress={() => setFilter('ALL')} />
+              <Chip label="Soonest"    active={filter==='SOONEST'}   onPress={() => setFilter('SOONEST')} />
+              <Chip label="Newest"     active={filter==='NEWEST'}    onPress={() => setFilter('NEWEST')} />
+              <Chip label="In-Person"  active={filter==='IN_PERSON'} onPress={() => setFilter('IN_PERSON')} />
+              <Chip label="Online"     active={filter==='ONLINE'}    onPress={() => setFilter('ONLINE')} />
+            </View>
 
-        <TextInput
-          placeholder="Filter by title or ID"
-          placeholderTextColor={colors.MUTED_TEXT}
-          value={query}
-          onChangeText={setQuery}
-          style={s.searchInput}
-        />
+            <TextInput
+              placeholder="Filter by title or ID"
+              placeholderTextColor={colors.MUTED_TEXT}
+              value={query}
+              onChangeText={setQuery}
+              style={s.searchInput}
+            />
+            <View style={s.selectorRow}>
+              <Text style={s.selectorLabel}>Show</Text>
+              <Chip label="10"  active={evLimit===10}  onPress={() => setEvLimit(10)} />
+              <Chip label="20"  active={evLimit===20}  onPress={() => setEvLimit(20)} />
+              <Chip label="50"  active={evLimit===50}  onPress={() => setEvLimit(50)} />
+              <Chip label="All" active={evLimit===9999} onPress={() => setEvLimit(9999)} />
+            </View>
 
-        {loading ? (
-          <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
-        ) : !hasEmail ? (
-          <Text style={s.hint}>Sign in to view and manage your joined events.</Text>
-        ) : rows.length === 0 ? (
-          <Text style={s.hint}>No joined events match your filters.</Text>
-        ) : (
-          <View style={{ gap: 10 }}>
-            {rows.map(ev => (
-              <View key={ev.id} style={s.joinItem}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
-                  <Text style={s.evMeta}>
-                    {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
-                  </Text>
-                  <View style={s.idRow}>
-                    <IdChip id={ev.id} withCopy />
-                    <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+            {loading ? (
+              <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
+            ) : !hasEmail ? (
+              <Text style={s.hint}>Sign in to view and manage your joined events.</Text>
+            ) : rows.length === 0 ? (
+              <Text style={s.hint}>No joined events match your filters.</Text>
+            ) : (
+              <View style={{ gap: 10 }}>
+                {visibleEvents.map(ev => (
+                  <View key={ev.id} style={s.joinItem}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
+                      <Text style={s.evMeta}>
+                        {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
+                      </Text>
+                      <View style={s.idRow}>
+                        <IdChip id={ev.id} withCopy />
+                        <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+                      </View>
+                    </View>
+                    <Pressable
+                      onPress={() => onUnjoin(ev)}
+                      disabled={isUnjoining(ev.id)}
+                      style={({ pressed }) => [
+                        s.unBtn,
+                        isUnjoining(ev.id) && { opacity: 0.5 },
+                        pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
+                      ]}
+                    >
+                      <Text style={s.unBtnText}>Unjoin</Text>
+                    </Pressable>
                   </View>
-                </View>
-                <Pressable
-                  onPress={() => onUnjoin(ev)}
-                  disabled={isUnjoining(ev.id)}
-                  style={({ pressed }) => [
-                    s.unBtn,
-                    isUnjoining(ev.id) && { opacity: 0.5 },
-                    pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
-                  ]}
-                >
-                  <Text style={s.unBtnText}>Unjoin</Text>
-                </Pressable>
+                ))}
               </View>
-            ))}
-          </View>
+            )}
+          </>
         )}
       </View>
 
       {/* Transactions */}
-      <View style={s.card}>
-        <Text style={s.cardTitle}>Transactions</Text>
-        <View style={s.actionsRow}>
-          <Pressable onPress={loadHistory} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
-            <Text style={s.refreshText}>Refresh</Text>
+      <View style={s.card} onLayout={setAnchor('tx')}>
+        <View style={s.cardHeaderRow}>
+          <Text style={s.cardTitle}>Transactions</Text>
+          <Pressable onPress={() => toggleCollapse('tx')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+            <Ionicons name={collapsed.tx ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
           </Pressable>
-          {__DEV__ && (
-            <Pressable onPress={seedDemoTx} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
-              <Text style={s.refreshText}>Add demo</Text>
-            </Pressable>
-          )}
         </View>
+        {!collapsed.tx && (
+          <>
+            <View style={s.actionsRow}>
+              <Pressable onPress={loadHistory} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+                <Text style={s.refreshText}>Refresh</Text>
+              </Pressable>
+            </View>
 
-        <View style={s.histFiltersRow}>
-          <Chip label="All" active={txType==='ALL'} onPress={() => setTxType('ALL')} />
-          <Chip label="Credits" active={txType==='CREDITS'} onPress={() => setTxType('CREDITS')} />
-          <Chip label="Debits" active={txType==='DEBITS'} onPress={() => setTxType('DEBITS')} />
+            <View style={s.histFiltersRow}>
+              <Chip label="All" active={txType==='ALL'} onPress={() => setTxType('ALL')} />
+              <Chip label="Credits" active={txType==='CREDITS'} onPress={() => setTxType('CREDITS')} />
+              <Chip label="Debits" active={txType==='DEBITS'} onPress={() => setTxType('DEBITS')} />
 
-          <View style={{ width: 8 }} />
+              <View style={{ width: 8 }} />
 
-          <Chip label="Newest" active={txSort==='NEW'} onPress={() => setTxSort('NEW')} />
-          <Chip label="Oldest" active={txSort==='OLD'} onPress={() => setTxSort('OLD')} />
-        </View>
+              <Chip label="Newest" active={txSort==='NEW'} onPress={() => setTxSort('NEW')} />
+              <Chip label="Oldest" active={txSort==='OLD'} onPress={() => setTxSort('OLD')} />
+            </View>
 
-        {/* Time filter chips */}
-        <View style={s.histChipsRow}>
-          <Chip label="All"        active={timeFilter==='ALL'}        onPress={() => setTimeFilter('ALL')} />
-          <Chip label="Today"      active={timeFilter==='TODAY'}      onPress={() => setTimeFilter('TODAY')} />
-          <Chip label="This Week"  active={timeFilter==='THIS_WEEK'}  onPress={() => setTimeFilter('THIS_WEEK')} />
-          <Chip label="Month"      active={timeFilter==='MONTH'}      onPress={() => setTimeFilter('MONTH')} />
-          <Chip label="Year"       active={timeFilter==='YEAR'}       onPress={() => setTimeFilter('YEAR')} />
-        </View>
+            {/* Time filter chips */}
+            <View style={s.histChipsRow}>
+              <Chip label="All"        active={timeFilter==='ALL'}        onPress={() => setTimeFilter('ALL')} />
+              <Chip label="Today"      active={timeFilter==='TODAY'}      onPress={() => setTimeFilter('TODAY')} />
+              <Chip label="This Week"  active={timeFilter==='THIS_WEEK'}  onPress={() => setTimeFilter('THIS_WEEK')} />
+              <Chip label="Month"      active={timeFilter==='MONTH'}      onPress={() => setTimeFilter('MONTH')} />
+              <Chip label="Year"       active={timeFilter==='YEAR'}       onPress={() => setTimeFilter('YEAR')} />
+            </View>
 
-        {/* Month/Year selectors when applicable */}
-        {timeFilter === 'MONTH' && (
-          <View style={s.selectorRow}>
-            <Pressable onPress={() => setMonthSel(m => (m+11)%12)} style={s.selectorBtn}><Text style={s.selectorText}>◀</Text></Pressable>
-            <Text style={s.selectorLabel}>
-              {new Date(yearSel, monthSel, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
-            </Text>
-            <Pressable onPress={() => setMonthSel(m => (m+1)%12)} style={s.selectorBtn}><Text style={s.selectorText}>▶</Text></Pressable>
-          </View>
-        )}
-        {timeFilter === 'YEAR' && (
-          <View style={s.selectorRow}>
-            <Pressable onPress={() => setYearSel(y => y - 1)} style={s.selectorBtn}><Text style={s.selectorText}>◀</Text></Pressable>
-            <Text style={s.selectorLabel}>{yearSel}</Text>
-            <Pressable onPress={() => setYearSel(y => y + 1)} style={s.selectorBtn}><Text style={s.selectorText}>▶</Text></Pressable>
-          </View>
-        )}
+            {/* Month/Year selectors when applicable */}
+            {timeFilter === 'MONTH' && (
+              <View style={s.selectorRow}>
+                <Pressable onPress={() => setMonthSel(m => (m+11)%12)} style={s.selectorBtn}><Text style={s.selectorText}>◀</Text></Pressable>
+                <Text style={s.selectorLabel}>
+                  {new Date(yearSel, monthSel, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+                </Text>
+                <Pressable onPress={() => setMonthSel(m => (m+1)%12)} style={s.selectorBtn}><Text style={s.selectorText}>▶</Text></Pressable>
+              </View>
+            )}
+            {timeFilter === 'YEAR' && (
+              <View style={s.selectorRow}>
+                <Pressable onPress={() => setYearSel(y => y - 1)} style={s.selectorBtn}><Text style={s.selectorText}>◀</Text></Pressable>
+                <Text style={s.selectorLabel}>{yearSel}</Text>
+                <Pressable onPress={() => setYearSel(y => y + 1)} style={s.selectorBtn}><Text style={s.selectorText}>▶</Text></Pressable>
+              </View>
+            )}
 
-        <TextInput
-          placeholder="Search notes…"
-          placeholderTextColor={colors.MUTED_TEXT}
-          value={txQuery}
-          onChangeText={setTxQuery}
-          style={s.searchInput}
-        />
+            <View style={s.selectorRow}>
+              <Text style={s.selectorLabel}>Show</Text>
+              <Chip label="10"   active={txLimit===10}   onPress={() => setTxLimit(10)} />
+              <Chip label="20"   active={txLimit===20}   onPress={() => setTxLimit(20)} />
+              <Chip label="50"   active={txLimit===50}   onPress={() => setTxLimit(50)} />
+              <Chip label="100"  active={txLimit===100}  onPress={() => setTxLimit(100)} />
+              <Chip label="All"  active={txLimit===9999} onPress={() => setTxLimit(9999)} />
+            </View>
+            <TextInput
+              placeholder="Search notes…"
+              placeholderTextColor={colors.MUTED_TEXT}
+              value={txQuery}
+              onChangeText={setTxQuery}
+              style={s.searchInput}
+            />
 
-        {histLoading ? (
-          <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
-        ) : (filteredHistory.length === 0 ? (
-          <Text style={s.hint}>No transactions match your filters.</Text>
-        ) : (
-          <View style={{ gap: 10 }}>
-            {groupedHistory.map(([group, items]) => (
-              <View key={group} style={s.histSection}>
-                <View style={s.histHeader}>
-                  <Text style={s.histHeaderText}>
-                    {new Date(group).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                  </Text>
-                </View>
-
-                {items.map((it, idx) => (
-                  <View key={String(it.ts) + ':' + idx} style={s.histRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text numberOfLines={2} style={s.histNote}>{it.note || '—'}</Text>
-                      <Text style={s.histMeta}>
-                        {new Date(it.ts).toLocaleString()}
+            {histLoading ? (
+              <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
+            ) : (filteredHistory.length === 0 ? (
+              <Text style={s.hint}>No transactions match your filters.</Text>
+            ) : (
+              <View style={{ gap: 10 }}>
+                {groupedHistory.map(([group, items]) => (
+                  <View key={group} style={s.histSection}>
+                    <View style={s.histHeader}>
+                      <Text style={s.histHeaderText}>
+                        {new Date(group).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                       </Text>
                     </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <Text style={it.delta >= 0 ? s.histDeltaPlus : s.histDeltaMinus}>
-                        {it.delta >= 0 ? '+' : '–'}${fmtDollars(Math.abs(it.delta))}
-                      </Text>
-                      <Text style={s.histBal}>Bal: ${fmtDollars(it.balanceAfter)}</Text>
-                    </View>
+
+                    {items.map((it, idx) => (
+                      <View key={String(it.ts) + ':' + idx} style={s.histRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text numberOfLines={2} style={s.histNote}>{it.note || '—'}</Text>
+                          <Text style={s.histMeta}>
+                            {new Date(it.ts).toLocaleString()}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text style={it.delta >= 0 ? s.histDeltaPlus : s.histDeltaMinus}>
+                            {it.delta >= 0 ? '+' : '–'}${fmtDollars(Math.abs(it.delta))}
+                          </Text>
+                          <Text style={s.histBal}>Bal: ${fmtDollars(it.balanceAfter)}</Text>
+                        </View>
+                      </View>
+                    ))}
                   </View>
                 ))}
+
+                {filteredHistory.length > txLimit && (
+                  <Pressable onPress={() => setTxLimit(v => v + 20)} style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}>
+                    <Text style={s.loadMoreText}>Load more</Text>
+                  </Pressable>
+                )}
               </View>
             ))}
+          </>
+        )}
+      </View>
 
-            {filteredHistory.length > txLimit && (
-              <Pressable onPress={() => setTxLimit(v => v + 20)} style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}>
-                <Text style={s.loadMoreText}>Load more</Text>
-              </Pressable>
-            )}
-          </View>
-        ))}
+      {/* Create Event (placeholder) */}
+      <View style={s.card} onLayout={setAnchor('create')}>
+        <View style={s.cardHeaderRow}>
+          <Text style={s.cardTitle}>Create Event</Text>
+          <Pressable onPress={() => toggleCollapse('create')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+            <Ionicons name={collapsed.create ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
+          </Pressable>
+        </View>
+        {!collapsed.create && (
+          <Text style={s.hint}>Quick access placeholder. Admin tools will live here later.</Text>
+        )}
       </View>
 
     </ScrollView>
@@ -625,6 +690,13 @@ const s = StyleSheet.create({
   content: { padding: 16, paddingBottom: 24 },
   h1: { color: colors.TEXT, fontSize: 22, fontWeight: '800' },
   sub: { color: colors.MUTED_TEXT, marginTop: 4, marginBottom: 14 },
+
+  stickyWrap: {
+    backgroundColor: colors.CANVAS,
+    borderBottomColor: colors.BORDER,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  stickyRow: { paddingVertical: 8, gap: 8, paddingHorizontal: 4, flexDirection: 'row', alignItems: 'center' },
 
   card: {
     backgroundColor: colors.SURFACE,
