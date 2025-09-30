@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, Activity
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
-import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory } from '../services/api';
+import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory, applyCredits } from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 
@@ -15,9 +15,7 @@ async function normalizeJoins(email: string) {
     // Accept array or legacy shapes
     let ids: string[] = [];
     if (Array.isArray(raw)) {
-      ids = raw
-        .map((it: any) => it?.id || it?.eventId)
-        .filter(Boolean);
+      ids = raw.map((it: any) => it?.id || it?.eventId).filter(Boolean);
     } else if (raw && Array.isArray((raw as any).joins)) {
       ids = (raw as any).joins.map((it: any) => it?.id || it?.eventId).filter(Boolean);
     } else if (raw && Array.isArray((raw as any).events)) {
@@ -100,10 +98,20 @@ export default function ProfileScreen() {
   const [joinedIds, setJoinedIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
-    // Transaction history
-    const [histLoading, setHistLoading] = useState(false);
-    const [history, setHistory] = useState<CreditEntry[]>([]);
-    const [groupBy, setGroupBy] = useState<'DAY' | 'MONTH' | 'YEAR'>('DAY');
+  // Transaction history
+  const [histLoading, setHistLoading] = useState(false);
+  const [history, setHistory] = useState<CreditEntry[]>([]);
+
+  // Time filters: Today / This Week / Month / Year / All
+  const [timeFilter, setTimeFilter] = useState<'ALL' | 'TODAY' | 'THIS_WEEK' | 'MONTH' | 'YEAR'>('ALL');
+  const [monthSel, setMonthSel] = useState<number>(new Date().getMonth());     // 0..11
+  const [yearSel, setYearSel]   = useState<number>(new Date().getFullYear());  // YYYY
+
+  // Transaction filters + paging
+  const [txType, setTxType] = useState<'ALL' | 'CREDITS' | 'DEBITS'>('ALL');
+  const [txSort, setTxSort] = useState<'NEW' | 'OLD'>('NEW'); // NEW = newest first
+  const [txQuery, setTxQuery] = useState<string>('');
+  const [txLimit, setTxLimit] = useState<number>(20);
 
   // Prevent double-taps / duplicate refunds
   const [unjoiningSet, setUnjoiningSet] = useState<Set<string>>(new Set());
@@ -112,28 +120,25 @@ export default function ProfileScreen() {
   // STEP3: balance-only loading flag
   const [balLoading, setBalLoading] = useState(false);
   const balanceDollars = useMemo(
-    
     () => (balanceCents != null ? (balanceCents / 100).toFixed(2) : null),
     [balanceCents]
   );
 
   // Top-level: fetch transaction history (do NOT nest inside other hooks)
-const loadHistory = useCallback(async () => {
-  if (!email) return;
-  setHistLoading(true);
-  try {
-    const list = await getCreditsHistory(email, { limit: 100 });
-    console.log('[Profile][History] loaded', list.length);
-    setHistory(list);
-  } catch (e) {
-    console.log('[Profile][History][err]', e);
-    setHistory([]);
-  } finally {
-    setHistLoading(false);
-  }
-}, [email]);
-
-  // Prevent duplicate unjoin/refund calls (critical exploit guard)
+  const loadHistory = useCallback(async () => {
+    if (!email) return;
+    setHistLoading(true);
+    try {
+      const list = await getCreditsHistory(email, { limit: 100 } as any);
+      console.log('[Profile][History] loaded', Array.isArray(list) ? list.length : 0);
+      setHistory(Array.isArray(list) ? list as any : []);
+    } catch (e) {
+      console.log('[Profile][History][err]', e);
+      setHistory([]);
+    } finally {
+      setHistLoading(false);
+    }
+  }, [email]);
 
   const [filter, setFilter] = useState<JoinFilter>('SOONEST');
   const [query, setQuery] = useState<string>('');
@@ -160,7 +165,7 @@ const loadHistory = useCallback(async () => {
       setJoinedIds([]);
       return;
     }
-    
+
     setLoading(true);
     try {
       const [b, j] = await Promise.all([
@@ -176,30 +181,31 @@ const loadHistory = useCallback(async () => {
     }
   }, [email, hasEmail]);
 
- // STEP3: Fetch balance only (separate from joined events)
-const loadBalanceOnly = useCallback(async () => {
-  if (!hasEmail) {
-    setBalanceCents(null);
-    return;
-  }
-  try {
-    setBalLoading(true);
-    console.log('[Profile][Balance] fetching for:', email);
-    const b = await getBalance(email);
-    console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
-    setBalanceCents(b as any);
-  } catch (e: any) {
-    console.log('[Profile][Balance] error:', e?.message || e);
-    Alert.alert('Error', e?.message || 'Failed to fetch balance');
-  } finally {
-    setBalLoading(false);
-  }
-}, [email, hasEmail]);
+  // STEP3: Fetch balance only (separate from joined events)
+  const loadBalanceOnly = useCallback(async () => {
+    if (!hasEmail) {
+      setBalanceCents(null);
+      return;
+    }
+    try {
+      setBalLoading(true);
+      console.log('[Profile][Balance] fetching for:', email);
+      const b = await getBalance(email);
+      console.log('[Profile][Balance] result:', b, 'typeof =', typeof b);
+      setBalanceCents(b as any);
+    } catch (e: any) {
+      console.log('[Profile][Balance] error:', e?.message || e);
+      Alert.alert('Error', e?.message || 'Failed to fetch balance');
+    } finally {
+      setBalLoading(false);
+    }
+  }, [email, hasEmail]);
 
   useEffect(() => { load(); }, [load]);
+
   useFocusEffect(useCallback(() => {
     load();
-    loadBalanceOnly(); // STEP3: also pull fresh balance on focus
+    loadBalanceOnly(); // pull fresh balance on focus
   }, [load, loadBalanceOnly]));
 
   useFocusEffect(
@@ -210,60 +216,121 @@ const loadBalanceOnly = useCallback(async () => {
   );
 
   // Robust, single-shot Profile unjoin (guarded against double-fire)
-const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
-  if (!email) { Alert.alert('Sign in', 'Please sign in to unjoin.'); return; }
+  const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: number; title?: string }) => {
+    if (!email) { Alert.alert('Sign in', 'Please sign in to unjoin.'); return; }
 
-  if (isUnjoining(ev.id)) {
-    console.log('[Profile][unjoin] BLOCKED duplicate tap for', ev.id);
-    return;
-  }
-
-  // mark busy
-  setUnjoiningSet(prev => {
-    const next = new Set(prev);
-    next.add(ev.id);
-    return next;
-  });
-
-  const fee = Math.abs(Number(ev.fee) || 0);
-  console.log('[Profile][unjoin] START', { id: ev.id, email, fee });
-
-  try {
-    // 1) remove join on server (idempotent)
-    await api.unrecordJoin(ev.id, email);
-    console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
-
-    // 2) update local cache so Events tab respects the change
-    await setJoinedLocal(email, ev.id, false);
-    console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
-
-    // 3) do ONE refund
-    if (fee > 0) {
-      await grantCredits(email, fee * 100, `unjoin:${ev.id}`);
-      console.log('[Profile][unjoin] grantCredits OK', ev.id, fee * 100);
+    if (isUnjoining(ev.id)) {
+      console.log('[Profile][unjoin] BLOCKED duplicate tap for', ev.id);
+      return;
     }
 
-    // 4) update UI + balance
-    setJoinedIds(prev => prev.filter(id => id !== ev.id));
-    const cents = await getBalance(email).catch(() => null);
-    if (typeof cents === 'number') setBalanceCents(cents as any);
-
-    Alert.alert('Unjoined', `Refunded $${fee}.`);
-  } catch (e: any) {
-    console.log('[Profile][unjoin] ERROR', e);
-    Alert.alert('Failed', e?.message || 'Could not unjoin');
-  } finally {
-    // clear busy
+    // mark busy
     setUnjoiningSet(prev => {
       const next = new Set(prev);
-      next.delete(ev.id);
+      next.add(ev.id);
       return next;
     });
-    console.log('[Profile][unjoin] END', ev.id);
-  }
-  }, [email, getBalance, grantCredits]
-);
-  
+
+    const fee = Math.abs(Number(ev.fee) || 0);
+    console.log('[Profile][unjoin] START', { id: ev.id, email, fee });
+
+    try {
+      // 1) remove join on server (idempotent)
+      await api.unrecordJoin(ev.id, email);
+      console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
+
+      // 2) update local cache so Events tab respects the change
+      await setJoinedLocal(email, ev.id, false);
+      console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
+
+      // 3) do ONE refund
+      if (fee > 0) {
+        await grantCredits(email, fee * 100, `unjoin:${ev.id}`);
+        console.log('[Profile][unjoin] grantCredits OK', ev.id, fee * 100);
+      }
+
+      // 4) update UI + balance
+      setJoinedIds(prev => prev.filter(id => id !== ev.id));
+      const cents = await getBalance(email).catch(() => null);
+      if (typeof cents === 'number') setBalanceCents(cents as any);
+
+      // 5) also refresh transaction history so the refund shows immediately
+      await loadHistory();
+
+      Alert.alert('Unjoined', `Refunded $${fee}.`);
+    } catch (e: any) {
+      console.log('[Profile][unjoin] ERROR', e);
+      Alert.alert('Failed', e?.message || 'Could not unjoin');
+    } finally {
+      // clear busy
+      setUnjoiningSet(prev => {
+        const next = new Set(prev);
+        next.delete(ev.id);
+        return next;
+      });
+      console.log('[Profile][unjoin] END', ev.id);
+    }
+  }, [email, isUnjoining, loadHistory]);
+
+  // ---- Transaction helpers + derived lists ----
+  const fmtDollars = useCallback((cents: number) => {
+    const n = Number(cents || 0);
+    return (n / 100).toFixed(2);
+  }, []);
+
+  const filteredHistory = useMemo(() => {
+    let l = [...history];
+
+    // Type filter
+    if (txType === 'CREDITS') l = l.filter(x => x.delta > 0);
+    else if (txType === 'DEBITS') l = l.filter(x => x.delta < 0);
+
+    // Note query
+    const q = txQuery.trim().toLowerCase();
+    if (q) l = l.filter(x => (x.note || '').toLowerCase().includes(q));
+
+    // Time filter
+    if (timeFilter !== 'ALL') {
+      const now = Date.now();
+      let start = -Infinity, end = Infinity;
+
+      if (timeFilter === 'TODAY') {
+        start = startOfDay(now); end = endOfDay(now);
+      } else if (timeFilter === 'THIS_WEEK') {
+        start = startOfWeek(now); end = endOfWeek(now);
+      } else if (timeFilter === 'MONTH') {
+        const r = monthRange(yearSel, monthSel); start = r.start; end = r.end;
+      } else if (timeFilter === 'YEAR') {
+        const r = yearRange(yearSel); start = r.start; end = r.end;
+      }
+
+      l = l.filter(x => x.ts >= start && x.ts <= end);
+    }
+
+    // Sort (NEW = newest first)
+    l.sort((a, b) => txSort === 'NEW' ? b.ts - a.ts : a.ts - b.ts);
+
+    return l;
+  }, [history, txType, txSort, txQuery, timeFilter, monthSel, yearSel]);
+
+  const visibleHistory = useMemo(() => filteredHistory.slice(0, txLimit), [filteredHistory, txLimit]);
+
+  // Group by DAY (YYYY-MM-DD) for section headers
+  const groupedHistory = useMemo(() => {
+    const groups = new Map<string, CreditEntry[]>();
+    for (const it of visibleHistory) {
+      const d = new Date(it.ts);
+      d.setHours(0, 0, 0, 0);
+      const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(it);
+    }
+    const entries = Array.from(groups.entries());
+    // order sections by date based on txSort
+    entries.sort((a, b) => txSort === 'NEW' ? (a[0] < b[0] ? 1 : -1) : (a[0] > b[0] ? 1 : -1));
+    return entries;
+  }, [visibleHistory, txSort]);
+
   const rows = useMemo(() => {
     console.log('[Profile][hydrate] joinedIds =', joinedIds);
     let events = hydrate(joinedIds);
@@ -277,14 +344,68 @@ const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: numb
   }, [joinedIds, filter, query, hydrate]);
 
   const onUnjoin = useCallback((ev: CatalogEvent) => {
-    // Route all unjoin actions through the single guarded handler to avoid duplicates.
     handleProfileUnjoin(ev);
   }, [handleProfileUnjoin]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await load(); } finally { setRefreshing(false); }
-  }, [load]);
+    try {
+      await load();
+      await loadHistory();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load, loadHistory]);
+
+  // Dev-only: quickly add a few demo transactions to verify UI updates end-to-end
+  const seedDemoTx = useCallback(async () => {
+    if (!hasEmail) { Alert.alert('Sign in', 'Please sign in to add demo transactions.'); return; }
+    try {
+      setHistLoading(true);
+      // +$10.00
+      await grantCredits(email, 1000, 'demo:credit +$10.00');
+      // -$5.00 (use applyCredits for a negative delta)
+      await applyCredits(email, -500, 'demo:debit -$5.00');
+      // +$25.00
+      await grantCredits(email, 2500, 'demo:credit +$25.00');
+      // refresh balance and history
+      await loadBalanceOnly();
+      await loadHistory();
+      Alert.alert('Demo transactions', 'Added 3 demo entries.');
+    } catch (e: any) {
+      Alert.alert('Demo failed', e?.message || String(e));
+    } finally {
+      setHistLoading(false);
+    }
+  }, [email, hasEmail, loadBalanceOnly, loadHistory]);
+
+  // --- Time range helpers for TX filters ---
+  function startOfDay(ts: number) {
+    const d = new Date(ts); d.setHours(0,0,0,0); return d.getTime();
+  }
+  function endOfDay(ts: number) {
+    const d = new Date(ts); d.setHours(23,59,59,999); return d.getTime();
+  }
+  function startOfWeek(ts: number) {
+    const d = new Date(ts); const day = d.getDay(); // Sun=0
+    d.setHours(0,0,0,0); d.setDate(d.getDate() - day);
+    return d.getTime();
+  }
+  function endOfWeek(ts: number) {
+    const s = startOfWeek(ts); const d = new Date(s);
+    d.setDate(d.getDate() + 6); d.setHours(23,59,59,999);
+    return d.getTime();
+  }
+  function monthRange(year: number, month0: number) {
+    const start = new Date(year, month0, 1, 0, 0, 0, 0).getTime();
+    const end   = new Date(year, month0 + 1, 0, 23, 59, 59, 999).getTime(); // last day of month
+    return { start, end };
+  }
+  function yearRange(year: number) {
+    const start = new Date(year, 0, 1, 0, 0, 0, 0).getTime();
+    const end   = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
+    return { start, end };
+  }
 
   return (
     <ScrollView
@@ -297,19 +418,120 @@ const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: numb
         {hasEmail ? `Signed in as ${email}` : 'Signed out — sign in to join events and manage balance.'}
       </Text>
 
-
       {/* Balance Card */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
-        <Text style={s.balanceText}>
-          {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `$${balanceDollars}`)}
-        </Text>
-        <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
-          <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
-        </Pressable>
+          <Text style={s.balanceText}>
+            {balLoading ? 'Loading…' : (balanceDollars == null ? '—' : `$${balanceDollars}`)}
+          </Text>
+          <Pressable onPress={loadBalanceOnly} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+            <Text style={s.refreshText}>{balLoading ? '…' : 'Refresh'}</Text>
+          </Pressable>
         </View>
         {!hasEmail && <Text style={s.hint}>Sign in to see your balance.</Text>}
+      </View>
+
+      {/* Transactions */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Transactions</Text>
+        <View style={s.actionsRow}>
+          <Pressable onPress={loadHistory} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+            <Text style={s.refreshText}>Refresh</Text>
+          </Pressable>
+          {__DEV__ && (
+            <Pressable onPress={seedDemoTx} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.9 }]}>
+              <Text style={s.refreshText}>Add demo</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <View style={s.histFiltersRow}>
+          <Chip label="All" active={txType==='ALL'} onPress={() => setTxType('ALL')} />
+          <Chip label="Credits" active={txType==='CREDITS'} onPress={() => setTxType('CREDITS')} />
+          <Chip label="Debits" active={txType==='DEBITS'} onPress={() => setTxType('DEBITS')} />
+
+          <View style={{ width: 8 }} />
+
+          <Chip label="Newest" active={txSort==='NEW'} onPress={() => setTxSort('NEW')} />
+          <Chip label="Oldest" active={txSort==='OLD'} onPress={() => setTxSort('OLD')} />
+        </View>
+
+        {/* Time filter chips */}
+        <View style={s.histChipsRow}>
+          <Chip label="All"        active={timeFilter==='ALL'}        onPress={() => setTimeFilter('ALL')} />
+          <Chip label="Today"      active={timeFilter==='TODAY'}      onPress={() => setTimeFilter('TODAY')} />
+          <Chip label="This Week"  active={timeFilter==='THIS_WEEK'}  onPress={() => setTimeFilter('THIS_WEEK')} />
+          <Chip label="Month"      active={timeFilter==='MONTH'}      onPress={() => setTimeFilter('MONTH')} />
+          <Chip label="Year"       active={timeFilter==='YEAR'}       onPress={() => setTimeFilter('YEAR')} />
+        </View>
+
+        {/* Month/Year selectors when applicable */}
+        {timeFilter === 'MONTH' && (
+          <View style={s.selectorRow}>
+            <Pressable onPress={() => setMonthSel(m => (m+11)%12)} style={s.selectorBtn}><Text style={s.selectorText}>◀</Text></Pressable>
+            <Text style={s.selectorLabel}>
+              {new Date(yearSel, monthSel, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+            </Text>
+            <Pressable onPress={() => setMonthSel(m => (m+1)%12)} style={s.selectorBtn}><Text style={s.selectorText}>▶</Text></Pressable>
+          </View>
+        )}
+        {timeFilter === 'YEAR' && (
+          <View style={s.selectorRow}>
+            <Pressable onPress={() => setYearSel(y => y - 1)} style={s.selectorBtn}><Text style={s.selectorText}>◀</Text></Pressable>
+            <Text style={s.selectorLabel}>{yearSel}</Text>
+            <Pressable onPress={() => setYearSel(y => y + 1)} style={s.selectorBtn}><Text style={s.selectorText}>▶</Text></Pressable>
+          </View>
+        )}
+
+        <TextInput
+          placeholder="Search notes…"
+          placeholderTextColor={colors.MUTED_TEXT}
+          value={txQuery}
+          onChangeText={setTxQuery}
+          style={s.searchInput}
+        />
+
+        {histLoading ? (
+          <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
+        ) : (filteredHistory.length === 0 ? (
+          <Text style={s.hint}>No transactions match your filters.</Text>
+        ) : (
+          <View style={{ gap: 10 }}>
+            {groupedHistory.map(([group, items]) => (
+              <View key={group} style={s.histSection}>
+                <View style={s.histHeader}>
+                  <Text style={s.histHeaderText}>
+                    {new Date(group).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                  </Text>
+                </View>
+
+                {items.map((it, idx) => (
+                  <View key={String(it.ts) + ':' + idx} style={s.histRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={2} style={s.histNote}>{it.note || '—'}</Text>
+                      <Text style={s.histMeta}>
+                        {new Date(it.ts).toLocaleString()}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={it.delta >= 0 ? s.histDeltaPlus : s.histDeltaMinus}>
+                        {it.delta >= 0 ? '+' : '–'}${fmtDollars(Math.abs(it.delta))}
+                      </Text>
+                      <Text style={s.histBal}>Bal: ${fmtDollars(it.balanceAfter)}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ))}
+
+            {filteredHistory.length > txLimit && (
+              <Pressable onPress={() => setTxLimit(v => v + 20)} style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}>
+                <Text style={s.loadMoreText}>Load more</Text>
+              </Pressable>
+            )}
+          </View>
+        ))}
       </View>
 
       {/* Joined Events */}
@@ -353,7 +575,7 @@ const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: numb
                   </View>
                 </View>
                 <Pressable
-                  onPress={() => handleProfileUnjoin(ev)}
+                  onPress={() => onUnjoin(ev)}
                   disabled={isUnjoining(ev.id)}
                   style={({ pressed }) => [
                     s.unBtn,
@@ -374,7 +596,6 @@ const handleProfileUnjoin = React.useCallback(async (ev: { id: string; fee: numb
 
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
-    
     <Pressable onPress={onPress} style={({ pressed }) => [ s.chip, active && s.chipActive, pressed && { opacity: 0.9 } ]} hitSlop={8}>
       <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
     </Pressable>
@@ -455,4 +676,24 @@ const s = StyleSheet.create({
     backgroundColor: 'transparent'
   },
   unBtnText: { color: colors.ORANGE, fontWeight: '800' },
+
+  // --- History styles ---
+  histSection: { },
+  histHeader: { paddingVertical: 6, borderBottomColor: colors.BORDER, borderBottomWidth: StyleSheet.hairlineWidth, marginBottom: 6 },
+  histHeaderText: { color: colors.MUTED_TEXT, fontWeight: '800', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  histRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingVertical: 10, borderBottomColor: colors.BORDER, borderBottomWidth: StyleSheet.hairlineWidth },
+  histNote: { color: colors.TEXT, fontSize: 13 },
+  histMeta: { color: colors.MUTED_TEXT, fontSize: 11, marginTop: 2 },
+  histDeltaPlus: { color: '#27d17f', fontWeight: '800', fontSize: 13, textAlign: 'right' },
+  histDeltaMinus: { color: '#ff6b6b', fontWeight: '800', fontSize: 13, textAlign: 'right' },
+  histBal: { color: colors.TEXT, fontSize: 11, marginTop: 2 },
+  histFiltersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10, alignItems: 'center' },
+  loadMoreBtn: { backgroundColor: '#1b1b1e', borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 6 },
+  loadMoreText: { color: colors.TEXT, fontWeight: '800' },
+  histChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  actionsRow: { flexDirection: 'row', gap: 8, marginBottom: 10, alignItems: 'center', justifyContent: 'flex-end' },
+  selectorRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 8 },
+  selectorBtn: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.BORDER, backgroundColor: '#1b1b1e' },
+  selectorText: { color: colors.TEXT, fontWeight: '800', fontSize: 14 },
+  selectorLabel: { color: colors.TEXT, fontWeight: '800' },
 });

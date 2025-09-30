@@ -14,7 +14,73 @@ app.post('/api/connect/webhook', ...connectWebhook);
 attachJoins(app);
 app.use(cors());
 app.use(express.json());
-app.use('/api/connect', connectRouter);
+
+// ---- Joins (in-memory, dev) — canonical block ----
+// Persist across hot reloads using globalThis cache.
+const joinsByEmail =
+  globalThis.__joinsByEmail || (globalThis.__joinsByEmail = new Map());
+
+function ensureJoinSet(email) {
+  const key = k(email);
+  if (!joinsByEmail.has(key)) joinsByEmail.set(key, new Set());
+  return joinsByEmail.get(key);
+}
+
+function serializeJoined(set) {
+  return Array.from(set || []).map(String);
+}
+
+// --- Read joins (three compat paths) ---
+app.get('/api/joins/:email', (req, res) => {
+  const email = req.params.email || '';
+  const set = ensureJoinSet(email);
+  return res.json({ success: true, joined: serializeJoined(set) });
+});
+
+app.get('/api/events/joins/:email', (req, res) => {
+  const email = req.params.email || '';
+  const set = ensureJoinSet(email);
+  return res.json({ success: true, joined: serializeJoined(set) });
+});
+
+app.get('/api/user/:email/joins', (req, res) => {
+  const email = req.params.email || '';
+  const set = ensureJoinSet(email);
+  return res.json({ success: true, joined: serializeJoined(set) });
+});
+
+// --- Write joins ---
+// Join an event — maps both ways; credits handled on client.
+app.post('/api/events/:id/join', (req, res) => {
+  const id = req.params.id;
+  const email = (req.body && req.body.email) || req.query.email || '';
+  if (!id || !email) {
+    return res.status(400).json({ success: false, error: 'missing id/email' });
+  }
+  ensureEventSet(id).add(k(email));
+  ensureJoinSet(email).add(String(id));
+  console.log('[joins][ADD]', { id, email });
+  return res.json({ success: true });
+});
+
+// Unjoin (DELETE with JSON body or query ?email=)
+// and legacy aliases that some clients still call.
+function unjoinHandler(req, res) {
+  const id = req.params.id;
+  const email = (req.body && req.body.email) || req.query.email || '';
+  if (!id || !email) {
+    return res.status(400).json({ success: false, error: 'missing id/email' });
+  }
+  ensureEventSet(id).delete(k(email));
+  ensureJoinSet(email).delete(String(id));
+  console.log('[joins][DEL]', { id, email });
+  return res.json({ success: true });
+}
+
+app.delete('/api/events/:id/join', unjoinHandler);
+app.post('/api/events/:id/unjoin', unjoinHandler);
+app.post('/api/events/:id/leave', unjoinHandler);
+app.post('/api/events/:id/unregister', unjoinHandler);
 
 const { PORT = 3001, STRIPE_SECRET_KEY = '' } = process.env;
 

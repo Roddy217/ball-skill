@@ -4,10 +4,12 @@ import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
 import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../services/api';
+import * as api from '../services/api';
 import IdChip from '../components/IdChip';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import { useAuth } from '../providers/AuthProvider';
+
+console.log('[Events] api keys:', Object.keys(api));
 
 type EventItem = {
   id: string;
@@ -216,7 +218,7 @@ useFocusEffect(
       // fetch and show new balance (convert cents→dollars if needed)
       const cents = await getBalance(userEmail);
       const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
-      Alert.alert('Joined', `Fee: $${fee}\nNew balance: $${dollars}`);
+      Alert.alert('Joined', `Fee: ${fee}\nNew balance: ${dollars}`);
     } catch (e: any) {
       Alert.alert('Join failed', e?.message || 'Unknown error');
     } finally {
@@ -234,7 +236,7 @@ useFocusEffect(
 
     Alert.alert(
       'Unjoin event',
-      `Refund $${Math.abs(Number(evt.fee) || 0)} for "${evt.title}"?`,
+      `Refund ${Math.abs(Number(evt.fee) || 0)} for "${evt.title}"?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -262,7 +264,7 @@ useFocusEffect(
               // show new balance
               const cents = await getBalance(userEmail);
               const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
-              Alert.alert('Unjoined', `Refund: $${fee}\nNew balance: $${dollars}`);
+              Alert.alert('Unjoined', `Refund: ${fee}\nNew balance: ${dollars}`);
               console.log('[Events][Unjoin] new balance for', userEmail, '→', dollars);
             } catch (e: any) {
               Alert.alert('Unjoin failed', e?.message || 'Unknown error');
