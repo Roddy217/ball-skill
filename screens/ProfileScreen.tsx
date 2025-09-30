@@ -419,20 +419,24 @@ export default function ProfileScreen() {
         {hasEmail ? `Signed in as ${email}` : 'Signed out — sign in to join events and manage balance.'}
       </Text>
 
+      {/* Profile Header (standalone card) */}
+      <View style={s.card}>
+        <View style={[s.cardHeaderRow, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+          <Text style={s.cardTitle}>Profile</Text>
+
+          <Pressable
+            onPress={() => Alert.alert('Messaging', 'In-app messaging is coming soon.')}
+            hitSlop={8}
+            style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+            accessibilityLabel="Open messaging (coming soon)"
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors?.ORANGE || '#F97316'} />
+          </Pressable>
+        </View>
+      </View>
+
       {/* Balance Card */}
       <View style={s.card}>
-      <View style={[s.cardHeaderRow, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
-        <Text style={s.cardTitle}>Profile</Text>
-
-        <Pressable
-          onPress={() => Alert.alert('Messaging', 'In-app messaging is coming soon.')}
-          hitSlop={8}
-          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
-          accessibilityLabel="Open messaging (coming soon)"
-        >
-          <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors?.ORANGE || '#F97316'} />
-        </Pressable>
-      </View>
         <Text style={s.cardTitle}>Balance</Text>
         <View style={s.balanceRow}>
           <Text style={s.balanceText}>
@@ -639,12 +643,17 @@ const s = StyleSheet.create({
   hint: { color: colors.MUTED_TEXT },
 
   filtersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  chip: {
+  
+  // inside StyleSheet.create({...})
+cardHeaderRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+},
+
+
+
+chip: {
     backgroundColor: '#1b1b1e',
     borderColor: colors.BORDER,
     borderWidth: StyleSheet.hairlineWidth,
