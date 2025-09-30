@@ -1,6 +1,6 @@
 /**
  * Central API client used by screens.
- * Exposes named exports (no default export).
+ * Exposes named exports and a default export object for back-compat.
  */
 
 type Json = Record<string, any>;
@@ -35,11 +35,7 @@ export async function loadApiBase() {
   return API_BASE;
 }
 
-
-// Format cents to a $ string. Examples:
-// dollars(1250) -> "$12.50"
-// dollars(-300) -> "-$3.00"
-// dollars(500, { withSign: true }) -> "+$5.00"
+// Format cents to a string with optional sign (UI adds "$")
 export function dollars(cents?: number | null, opts?: { withSign?: boolean }): string {
   const n = Number(cents ?? 0);
   const abs = Math.abs(n);
@@ -86,7 +82,7 @@ export async function grantCredits(email: string, deltaCents: number, note?: str
   const payload = { email: (email || '').toLowerCase(), delta: Number(deltaCents||0), note: note || '' };
   const { ok, json } = await http<{ success: boolean; balance: number }>('POST', `/credits/grant`, payload);
   if (!ok || !json?.success) throw new Error('grant failed');
-  return json;
+  return json as any;
 }
 
 /** Alias kept for older callers */
@@ -102,21 +98,12 @@ export async function getCreditsHistory(
   const limit = Math.max(1, Math.min(500, opts?.limit ?? 100));
   const enc = encodeURIComponent((email || '').toLowerCase());
 
-  // If your api.ts uses a shared `http()` helper (you'll see other functions calling http('GET', ...)),
-  // use it to keep logs consistent:
-  //   const { ok, json } = await http('GET', `/credits/${enc}/history?limit=${limit}`);
-  //   if (!ok || !json?.success) throw new Error('history failed');
-  //   return Array.isArray(json.history) ? json.history : [];
-
-  // If you DON'T have http(), fall back to fetch + getApiBase():
-  const base = getApiBase();
-  const url = `${base}/credits/${enc}/history?limit=${limit}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`history failed: ${res.status}`);
-  const json = await res.json();
-  if (!json?.success) throw new Error('history response not successful');
-  return Array.isArray(json.history) ? json.history : [];
-
+  const { ok, json } = await http<{ success: boolean; history?: any[] }>(
+    'GET',
+    `/credits/${enc}/history?limit=${limit}`
+  );
+  if (!ok || !json?.success) throw new Error('history failed');
+  return Array.isArray(json.history) ? (json.history as any[]) : [];
 }
 
 /* ---------------- Joins ---------------- */
@@ -143,32 +130,30 @@ export async function getUserJoins(email: string): Promise<any> {
 
 /** Join an event */
 export async function recordJoin(eventId: string, email: string) {
-  const base = (getApiBase?.() || process.env.EXPO_PUBLIC_SERVER_URL || 'http://192.168.1.244:3001/api').replace(/\/$/, '');
-  const url = `${base}/events/${encodeURIComponent(eventId)}/join`;
-  console.log('[api] →', url, 'POST', 'body=', JSON.stringify({ email }));
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
-  const json = await res.json().catch(() => ({}));
-  console.log('[api] ←', url.replace(base, ''), res.status, JSON.stringify(json));
-  if (!res.ok || !json?.success) throw new Error(json?.error || `join failed: ${res.status}`);
-  return json;
+  const eid = encodeURIComponent(eventId);
+  const payload = { email: (email || '').toLowerCase() };
+
+  // primary, matches your server
+  let r = await http('POST', `/events/${eid}/join`, payload);
+  if (r.ok && (r.json as any)?.success !== false) return r.json;
+
+  // legacy fallbacks
+  r = await http('POST', `/events/${eid}/register`, payload);
+  if (r.ok && (r.json as any)?.success !== false) return r.json;
+
+  throw new Error('join failed (no compatible route)');
 }
 
 /** Unjoin an event — try the route your server supports first (DELETE /events/:id/join) */
 export async function unrecordJoin(eventId: string, email: string) {
   const eid = encodeURIComponent(eventId);
   const payload = { email: (email || '').toLowerCase() };
-  const base = (getApiBase?.() || process.env.EXPO_PUBLIC_SERVER_URL || 'http://192.168.1.244:3001/api').replace(/\/$/, '');
-  const url = `${base}/events/${encodeURIComponent(eventId)}/join`;
-  console.log('[api] →', url, 'DELETE', 'body=', JSON.stringify({ email }));
-  const res = await fetch(url, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
-  const json = await res.json().catch(() => ({}));
-  console.log('[api] ←', url.replace(base, ''), res.status, JSON.stringify(json));
 
-  // Your server supports this (seen returning 200 in logs)
+  // primary, matches your server
   let r = await http('DELETE', `/events/${eid}/join`, payload as any);
   if (r.ok && (r.json as any)?.success !== false) return r.json;
 
-  // Other fallbacks used by older builds
+  // other fallbacks used by older builds
   r = await http('POST', `/events/${eid}/unjoin`, payload);
   if (r.ok && (r.json as any)?.success !== false) return r.json;
 
@@ -202,3 +187,23 @@ export async function getConnectStatus(
   if (!ok || !(json as any)?.success) throw new Error('status failed');
   return json as any;
 }
+
+/* ---------------- Default export (back-compat) ---------------- */
+
+const api = {
+  getApiBase,
+  setApiBase,
+  loadApiBase,
+  dollars,
+  getBalance,
+  grantCredits,
+  applyCredits,
+  getCreditsHistory,
+  getUserJoins,
+  recordJoin,
+  unrecordJoin,
+  startConnectOnboarding,
+  getConnectStatus,
+};
+
+export default api;
