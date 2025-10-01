@@ -114,6 +114,10 @@ export default function ProfileScreen() {
   const [txQuery, setTxQuery] = useState<string>('');
   const [txLimit, setTxLimit] = useState<number>(20);
   const [evLimit, setEvLimit] = useState<number>(10); // Joined Events visible count
+  const [evDateFilter, setEvDateFilter] = useState<'ALL'|'MONTH'|'WEEK'>('ALL');
+  const [evMonthSel, setEvMonthSel] = useState<number>(new Date().getMonth());
+  const [evYearSel, setEvYearSel] = useState<number>(new Date().getFullYear());
+  const [evWeekStart, setEvWeekStart] = useState<number>(startOfWeek(Date.now()));
 
   // Sticky quick-nav + anchors
   const scRef = useRef<any>(null);
@@ -364,7 +368,30 @@ export default function ProfileScreen() {
     if (q) events = events.filter(e => e.title.toLowerCase().includes(q) || e.id.toLowerCase().includes(q));
     return events;
   }, [joinedIds, filter, query, hydrate]);
-  const visibleEvents = useMemo(() => rows.slice(0, evLimit), [rows, evLimit]);
+  const evMonthRange = useMemo(() => monthRange(evYearSel, evMonthSel), [evYearSel, evMonthSel]);
+  const evWeekRange  = useMemo(() => ({ start: startOfWeek(evWeekStart), end: endOfWeek(evWeekStart) }), [evWeekStart]);
+
+  const monthCount = useMemo(
+    () => rows.filter(e => e.startTs >= evMonthRange.start && e.startTs <= evMonthRange.end).length,
+    [rows, evMonthRange]
+  );
+
+  const weekCount  = useMemo(
+    () => rows.filter(e => e.startTs >= evWeekRange.start && e.startTs <= evWeekRange.end).length,
+    [rows, evWeekRange]
+  );
+
+  const rowsDated = useMemo(() => {
+    if (evDateFilter === 'ALL') return rows;
+    if (evDateFilter === 'MONTH') {
+      const { start, end } = evMonthRange;
+      return rows.filter(e => e.startTs >= start && e.startTs <= end);
+    }
+    const { start, end } = evWeekRange; // WEEK
+    return rows.filter(e => e.startTs >= start && e.startTs <= end);
+  }, [rows, evDateFilter, evMonthRange, evWeekRange]);
+
+  const visibleEvents = useMemo(() => rowsDated.slice(0, evLimit), [rowsDated, evLimit]);
 
   const onUnjoin = useCallback((ev: CatalogEvent) => {
     handleProfileUnjoin(ev);
@@ -401,6 +428,10 @@ export default function ProfileScreen() {
   function monthRange(year: number, month0: number) {
     const start = new Date(year, month0, 1, 0, 0, 0, 0).getTime();
     const end   = new Date(year, month0 + 1, 0, 23, 59, 59, 999).getTime(); // last day of month
+    function fmtMDY(ts: number) {
+      const d = new Date(ts);
+      return `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`;
+    }
     return { start, end };
   }
   function yearRange(year: number) {
@@ -408,6 +439,13 @@ export default function ProfileScreen() {
     const end   = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
     return { start, end };
   }
+
+  // Tiny date formatter used by Joined Events week label
+  function fmtMDY(ts: number) {
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+  }
+
 
   return (
     <ScrollView
@@ -499,6 +537,68 @@ export default function ProfileScreen() {
               onChangeText={setQuery}
               style={s.searchInput}
             />
+                        {/* Date filter chips for joined events */}
+                        <View style={s.histChipsRow}>
+              <Chip label="All dates" active={evDateFilter==='ALL'} onPress={() => setEvDateFilter('ALL')} />
+              <Chip
+                label={`${new Date(evYearSel, evMonthSel, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })} (${monthCount})`}
+                active={evDateFilter==='MONTH'}
+                onPress={() => setEvDateFilter('MONTH')}
+              />
+              <Chip
+                label={`${fmtMDY(evWeekRange.start)} - ${fmtMDY(evWeekRange.end)} (${weekCount})`}
+                active={evDateFilter==='WEEK'}
+                onPress={() => setEvDateFilter('WEEK')}
+              />
+            </View>
+
+            {/* Month chooser */}
+            {evDateFilter === 'MONTH' && (
+              <View style={s.selectorRow}>
+                <Pressable
+                  onPress={() => {
+                    setEvMonthSel(m => {
+                      if (m === 0) { setEvYearSel(y => y - 1); return 11; }
+                      return m - 1;
+                    });
+                  }}
+                  style={s.selectorBtn}
+                >
+                  <Text style={s.selectorText}>◀</Text>
+                </Pressable>
+
+                <Text style={s.selectorLabel}>
+                  {new Date(evYearSel, evMonthSel, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+                </Text>
+
+                <Pressable
+                  onPress={() => {
+                    setEvMonthSel(m => {
+                      if (m === 11) { setEvYearSel(y => y + 1); return 0; }
+                      return m + 1;
+                    });
+                  }}
+                  style={s.selectorBtn}
+                >
+                  <Text style={s.selectorText}>▶</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {/* Week chooser */}
+            {evDateFilter === 'WEEK' && (
+              <View style={s.selectorRow}>
+                <Pressable onPress={() => setEvWeekStart(s => startOfWeek(s - 7*24*60*60*1000))} style={s.selectorBtn}>
+                  <Text style={s.selectorText}>◀</Text>
+                </Pressable>
+
+                <Text style={s.selectorLabel}>{`${fmtMDY(evWeekRange.start)} - ${fmtMDY(evWeekRange.end)}`}</Text>
+
+                <Pressable onPress={() => setEvWeekStart(s => startOfWeek(s + 7*24*60*60*1000))} style={s.selectorBtn}>
+                  <Text style={s.selectorText}>▶</Text>
+                </Pressable>
+              </View>
+            )}
             <View style={s.selectorRow}>
               <Text style={s.selectorLabel}>Show</Text>
               <Chip label="10"  active={evLimit===10}  onPress={() => setEvLimit(10)} />
@@ -514,40 +614,57 @@ export default function ProfileScreen() {
             ) : rows.length === 0 ? (
               <Text style={s.hint}>No joined events match your filters.</Text>
             ) : (
-              <View style={{ gap: 10 }}>
-                {visibleEvents.map(ev => (
-                  <View key={ev.id} style={s.joinItem}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
-                      <Text style={s.evMeta}>
-                        {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
-                      </Text>
-                      <View style={s.idRow}>
-                        <IdChip id={ev.id} withCopy />
-                        <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
-                      </View>
-                    </View>
-                    <Pressable
-                      onPress={() => onUnjoin(ev)}
-                      disabled={isUnjoining(ev.id)}
-                      style={({ pressed }) => [
-                        s.unBtn,
-                        isUnjoining(ev.id) && { opacity: 0.5 },
-                        pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
-                      ]}
-                    >
-                      <Text style={s.unBtnText}>Unjoin</Text>
-                    </Pressable>
-                  </View>
-                ))}
+  <>
+    <ScrollView
+      style={s.insetScroll}
+      nestedScrollEnabled
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={{ gap: 10 }}>
+        {visibleEvents.map(ev => (
+          <View key={ev.id} style={s.joinItem}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
+              <Text style={s.evMeta}>
+                {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
+              </Text>
+              <View style={s.idRow}>
+                <IdChip id={ev.id} withCopy />
+                <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
               </View>
-            )}
+            </View>
+            <Pressable
+              onPress={() => onUnjoin(ev)}
+              disabled={isUnjoining(ev.id)}
+              style={({ pressed }) => [
+                s.unBtn,
+                isUnjoining(ev.id) && { opacity: 0.5 },
+                pressed && !isUnjoining(ev.id) && { opacity: 0.85 },
+              ]}
+            >
+              <Text style={s.unBtnText}>Unjoin</Text>
+            </Pressable>
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+
+    {rows.length > evLimit && (
+      <Pressable
+        onPress={() => setEvLimit(v => v + 10)}
+        style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}
+      >
+        <Text style={s.loadMoreText}>Load more</Text>
+      </Pressable>
+    )}
+  </>
+)}
           </>
         )}
       </View>
 
-      {/* Transactions */}
-      <View style={s.card} onLayout={setAnchor('tx')}>
+            {/* Transactions */}
+            <View style={s.card} onLayout={setAnchor('tx')}>
         <View style={s.cardHeaderRow}>
           <Text style={s.cardTitle}>Transactions</Text>
           <Pressable onPress={() => toggleCollapse('tx')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
@@ -618,44 +735,57 @@ export default function ProfileScreen() {
 
             {histLoading ? (
               <View style={s.loadingRow}><ActivityIndicator color={colors.ORANGE} /></View>
-            ) : (filteredHistory.length === 0 ? (
+            ) : filteredHistory.length === 0 ? (
               <Text style={s.hint}>No transactions match your filters.</Text>
             ) : (
-              <View style={{ gap: 10 }}>
-                {groupedHistory.map(([group, items]) => (
-                  <View key={group} style={s.histSection}>
-                    <View style={s.histHeader}>
-                      <Text style={s.histHeaderText}>
-                        {new Date(group).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                      </Text>
-                    </View>
+              <>
+                <ScrollView
+                  style={[s.insetScroll, { maxHeight: 420 }]}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}
+                >
+                  <View style={{ gap: 10 }}>
+                    {groupedHistory.map(([group, items]) => (
+                      <View key={group} style={s.histSection}>
+                        <View style={s.histHeader}>
+                          <Text style={s.histHeaderText}>
+                            {new Date(group).toLocaleDateString(undefined, {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                            })}
+                          </Text>
+                        </View>
 
-                    {items.map((it, idx) => (
-                      <View key={String(it.ts) + ':' + idx} style={s.histRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text numberOfLines={2} style={s.histNote}>{it.note || '—'}</Text>
-                          <Text style={s.histMeta}>
-                            {new Date(it.ts).toLocaleString()}
-                          </Text>
-                        </View>
-                        <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={it.delta >= 0 ? s.histDeltaPlus : s.histDeltaMinus}>
-                            {it.delta >= 0 ? '+' : '–'}${fmtDollars(Math.abs(it.delta))}
-                          </Text>
-                          <Text style={s.histBal}>Bal: ${fmtDollars(it.balanceAfter)}</Text>
-                        </View>
+                        {items.map((it, idx) => (
+                          <View key={`${it.ts}:${idx}`} style={s.histRow}>
+                            <View style={{ flex: 1 }}>
+                              <Text numberOfLines={2} style={s.histNote}>{it.note || '—'}</Text>
+                              <Text style={s.histMeta}>{new Date(it.ts).toLocaleString()}</Text>
+                            </View>
+                            <View style={{ alignItems: 'flex-end' }}>
+                              <Text style={it.delta >= 0 ? s.histDeltaPlus : s.histDeltaMinus}>
+                                {it.delta >= 0 ? '+' : '–'}${fmtDollars(Math.abs(it.delta))}
+                              </Text>
+                              <Text style={s.histBal}>Bal: ${fmtDollars(it.balanceAfter)}</Text>
+                            </View>
+                          </View>
+                        ))}
                       </View>
                     ))}
                   </View>
-                ))}
+                </ScrollView>
 
                 {filteredHistory.length > txLimit && (
-                  <Pressable onPress={() => setTxLimit(v => v + 20)} style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}>
+                  <Pressable
+                    onPress={() => setTxLimit(v => v + 20)}
+                    style={({ pressed }) => [s.loadMoreBtn, pressed && { opacity: 0.9 }]}
+                  >
                     <Text style={s.loadMoreText}>Load more</Text>
                   </Pressable>
                 )}
-              </View>
-            ))}
+              </>
+            )}
           </>
         )}
       </View>
@@ -749,6 +879,10 @@ chip: {
   },
 
   loadingRow: { paddingVertical: 8, alignItems: 'center' },
+  insetScroll: {
+    maxHeight: 380,
+    paddingRight: 2,
+  },
 
   joinItem: {
     backgroundColor: '#16161a',
