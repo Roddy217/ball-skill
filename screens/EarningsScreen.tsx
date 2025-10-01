@@ -14,11 +14,10 @@ import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
 import {
   getBalance,
+  getCreditsHistory,
   dollars as toDollars,
-  getConnectStatus,
-  startConnectOnboarding,
-  getApiBase,
 } from '../services/api';
+import StripeSection from '../components/StripeSection';
 
 type ConnectStatus =
   | { success: false; error?: string }
@@ -39,10 +38,11 @@ export default function EarningsScreen() {
   const [balLoading, setBalLoading] = useState(false);
   const [balanceCents, setBalanceCents] = useState<number | null>(null);
 
-  const [statusLoading, setStatusLoading] = useState(false);
-  const [connect, setConnect] = useState<ConnectStatus | null>(null);
+  // Wallets derived from history
+  const [histLoading, setHistLoading] = useState(false);
+  const [skillCents, setSkillCents] = useState(0);
+  const [realCents, setRealCents] = useState(0);
 
-  const [onboardBusy, setOnboardBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const balanceDollars = useMemo(
@@ -64,63 +64,49 @@ export default function EarningsScreen() {
     }
   }, [email, hasEmail]);
 
-  const loadStatus = useCallback(async () => {
+  const loadWallets = useCallback(async () => {
     if (!hasEmail) {
-      setConnect({ success: false, error: 'no_email' });
+      setSkillCents(0);
+      setRealCents(0);
       return;
     }
-    setStatusLoading(true);
+    setHistLoading(true);
     try {
-      const s = await getConnectStatus(email);
-      setConnect(s as ConnectStatus);
-    } catch (e: any) {
-      console.log('[Earnings][Status] error', e?.message || e);
-      setConnect({ success: false, error: 'request_failed' });
+      const list = await getCreditsHistory(email, { limit: 500 });
+      let skill = 0;
+      let real = 0;
+      for (const it of list) {
+        const note = (it?.note || '').toLowerCase();
+        const isPromo = /promo|skill wallet|bonus|comp/.test(note);
+        if (isPromo) skill += Number(it.delta || 0);
+        else real += Number(it.delta || 0);
+      }
+      const total = Number(balanceCents || 0);
+      if (skill + real !== total) {
+        // keep totals consistent with current balance
+        real = total - skill;
+      }
+      setSkillCents(Math.max(0, skill));
+      setRealCents(Math.max(0, real));
+    } catch (e) {
+      // fallback: put everything in Dollars wallet
+      setSkillCents(0);
+      setRealCents(Number(balanceCents || 0));
     } finally {
-      setStatusLoading(false);
+      setHistLoading(false);
     }
-  }, [email, hasEmail]);
+  }, [email, hasEmail, balanceCents]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.allSettled([loadBalance(), loadStatus()]);
+    await Promise.allSettled([loadBalance(), loadWallets()]);
     setRefreshing(false);
-  }, [loadBalance, loadStatus]);
-
-  const onSetupPayouts = useCallback(async () => {
-    if (!hasEmail) {
-      Alert.alert('Stripe', 'Please sign in with email to set up payouts.');
-      return;
-    }
-    setOnboardBusy(true);
-    try {
-      // Use server origin so Stripe will accept the URLs (must be valid http(s))
-      const origin = String(getApiBase()).replace(/\/+$/, '');
-      const refreshUrl = `${origin}/connect/refresh`;
-      const returnUrl = `${origin}/connect/return`;
-
-      const resp = await startConnectOnboarding(email, { refreshUrl, returnUrl });
-      if (!resp?.success || !resp?.url) {
-        console.log('[Earnings][Onboard] failed', resp);
-        Alert.alert('Stripe', 'Could not start onboarding. Please try again.');
-        return;
-      }
-      const ok = await Linking.openURL(resp.url).catch(() => false);
-      if (!ok) {
-        Alert.alert('Stripe', 'Could not open onboarding link.');
-      }
-    } catch (e: any) {
-      console.log('[Earnings][Onboard] error', e?.message || e);
-      Alert.alert('Stripe', 'Onboarding failed.');
-    } finally {
-      setOnboardBusy(false);
-    }
-  }, [email, hasEmail]);
+  }, [loadBalance, loadWallets]);
 
   useEffect(() => {
     loadBalance();
-    loadStatus();
-  }, [loadBalance, loadStatus]);
+    loadWallets();
+  }, [loadBalance, loadWallets]);
 
   return (
     <ScrollView
@@ -137,7 +123,7 @@ export default function EarningsScreen() {
         <Text style={s.cardTitle}>My balance</Text>
         <View style={s.row}>
           <Text style={s.value}>
-            {balLoading ? 'Loading…' : balanceDollars != null ? `$${balanceDollars}` : '—'}
+            {balLoading ? 'Loading…' : balanceDollars != null ? `${balanceDollars}` : '—'}
           </Text>
           <Pressable
             onPress={loadBalance}
@@ -149,90 +135,41 @@ export default function EarningsScreen() {
         {!hasEmail && <Text style={s.subtle}>Sign in with email to track earnings.</Text>}
       </View>
 
-      {/* Stripe Connect Status */}
+      {/* Wallets */}
       <View style={s.card}>
-        <Text style={s.cardTitle}>Payouts (Stripe Connect)</Text>
-
-        {statusLoading ? (
-          <View style={[s.row, { alignItems: 'center' }]}>
-            <ActivityIndicator />
-            <Text style={[s.subtle, { marginLeft: 10 }]}>Checking status…</Text>
+        <Text style={s.cardTitle}>Wallets</Text>
+        <View style={{ gap: 12 }}>
+          <View style={s.row}>
+            <Text style={s.walletLabel}>
+              <Text style={{ color: '#F97316', fontWeight: '900' }}>$</Text> Skill wallet
+            </Text>
+            <Text style={s.valueSmall}>
+              {histLoading ? 'Loading…' : (toDollars(skillCents))}
+            </Text>
           </View>
-        ) : !connect || (connect && (connect as any).success === false) ? (
-          <>
-            <Text style={s.subtle}>Status unavailable.</Text>
-            <View style={[s.row, { marginTop: 10 }]}>
-              <Pressable
-                onPress={loadStatus}
-                style={({ pressed }) => [s.chip, pressed && { opacity: 0.9 }]}
-              >
-                <Text style={s.chipText}>Retry</Text>
-              </Pressable>
-            </View>
-          </>
-        ) : (
-          <>
-            <View style={s.kvBlock}>
-              <Text style={s.kv}>
-                <Text style={s.kvKey}>Account: </Text>
-                <Text style={s.kvVal}>
-                  {(connect as any).hasAccount ? (connect as any).accountId : 'Not created'}
-                </Text>
-              </Text>
-              <Text style={s.kv}>
-                <Text style={s.kvKey}>Payouts enabled: </Text>
-                <Text style={s.kvVal}>
-                  {(connect as any).payouts_enabled ? 'Yes ✅' : 'No'}
-                </Text>
-              </Text>
-              <Text style={s.kv}>
-                <Text style={s.kvKey}>Charges enabled: </Text>
-                <Text style={s.kvVal}>
-                  {(connect as any).charges_enabled ? 'Yes ✅' : 'No'}
-                </Text>
-              </Text>
-            </View>
+          <Text style={s.subtle}>Promo credits. Not eligible for payout.</Text>
 
-            {!!(connect as any).requirements_due?.length && (
-              <View style={{ marginTop: 12 }}>
-                <Text style={s.sectionLabel}>Requirements due</Text>
-                {(connect as any).requirements_due.map((it: string) => (
-                  <Text key={it} style={s.subtleBullet}>• {it}</Text>
-                ))}
-              </View>
-            )}
-
-            <View style={[s.row, { marginTop: 14 }]}>
-              {!(connect as any).hasAccount || !(connect as any).payouts_enabled ? (
-                <Pressable
-                  disabled={onboardBusy}
-                  onPress={onSetupPayouts}
-                  style={({ pressed }) => [
-                    s.primary,
-                    onboardBusy && s.primaryDisabled,
-                    pressed && !onboardBusy && { opacity: 0.92 },
-                  ]}
-                >
-                  {onboardBusy ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={s.primaryText}>
-                      {(connect as any).hasAccount ? 'Continue setup' : 'Set up payouts'}
-                    </Text>
-                  )}
-                </Pressable>
-              ) : (
-                <Pressable
-                  onPress={loadStatus}
-                  style={({ pressed }) => [s.chip, pressed && { opacity: 0.9 }]}
-                >
-                  <Text style={s.chipText}>Refresh status</Text>
-                </Pressable>
-              )}
-            </View>
-          </>
-        )}
+          <View style={[s.row, { marginTop: 10 }]}>
+            <Text style={s.walletLabel}>
+              <Text style={{ color: '#16a34a', fontWeight: '900' }}>$</Text> Dollars wallet
+            </Text>
+            <Text style={s.valueSmall}>
+              {histLoading ? 'Loading…' : (toDollars(realCents))}
+            </Text>
+          </View>
+          <Text style={s.subtle}>Payout‑eligible once your Stripe account is fully set up.</Text>
+        </View>
       </View>
+
+      {/* How payouts work */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>How payouts work</Text>
+        <Text style={s.subtleBullet}>• $Skill = promotional credits you can use in‑app (not paid out).</Text>
+        <Text style={s.subtleBullet}>• $Dollars = real credits. Deposited to your bank after Stripe setup.</Text>
+        <Text style={s.subtleBullet}>• Your total balance equals $Skill + $Dollars.</Text>
+      </View>
+
+      <StripeSection />
     </ScrollView>
   );
 }
@@ -263,6 +200,8 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 
   value: { color: colors.WHITE, fontSize: 30, fontWeight: '900', letterSpacing: 0.25 },
+  valueSmall: { color: colors.WHITE, fontSize: 22, fontWeight: '900', letterSpacing: 0.25 },
+  walletLabel: { color: colors.WHITE, fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
 
   chip: {
     borderColor: '#2a2a2a',
