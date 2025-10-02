@@ -86,7 +86,7 @@ const { PORT = 3001, STRIPE_SECRET_KEY = '' } = process.env;
 
 // ---- In-memory stores ----
 const events = []; // [{ id, name, dateISO, locationType, feeCents, drillsEnabled }]
-const credits = new Map(); // email -> { balance: number }
+const credits = new Map(); // email -> { dollars: number, skill: number }
 const creditsHistory = new Map(); // email -> [{ ts, delta, note, balanceAfter }]
 const registrationsByEvent = new Map(); // eventId -> Set<email>
 
@@ -98,14 +98,14 @@ const stripeAccountsByEmail = new Map();
 function k(email) { return (email || '').toLowerCase(); }
 function getUserCredits(email) {
   const key = k(email);
-  if (!credits.has(key)) credits.set(key, { balance: 0 });
+  if (!credits.has(key)) credits.set(key, { dollars: 0, skill: 0 });
   return credits.get(key);
 }
 function ensureEventSet(eventId) {
   if (!registrationsByEvent.has(eventId)) registrationsByEvent.set(eventId, new Set());
   return registrationsByEvent.get(eventId);
 }
-function pushHistory(email, delta, note, balanceAfter) {
+function pushHistory(email, delta, note, balanceAfter, wallet) {
   const key = k(email);
   if (!creditsHistory.has(key)) creditsHistory.set(key, []);
   creditsHistory.get(key).push({
@@ -113,6 +113,7 @@ function pushHistory(email, delta, note, balanceAfter) {
     delta: Number(delta),
     note: note || null,
     balanceAfter: Number(balanceAfter),
+    ...(wallet ? { wallet } : {}),
   });
 }
 
@@ -165,22 +166,48 @@ app.post('/api/events/:id/joinDemo', (req, res) => {
   }
 
   const wallet = getUserCredits(email);
-  if (wallet.balance < fee) {
-    return res.status(400).json({ success: false, error: 'insufficient credits', balance: wallet.balance, required: fee });
+  const combinedBefore = (wallet.dollars || 0) + (wallet.skill || 0);
+  if (combinedBefore < fee) {
+    return res.status(400).json({ success: false, error: 'insufficient credits', balance: combinedBefore, required: fee });
   }
 
-  wallet.balance -= fee;
-  pushHistory(email, -fee, `join:${id}`, wallet.balance);
-  regSet.add(email);
+  let remaining = fee;
+  if ((wallet.dollars || 0) > 0) {
+    const use = Math.min(wallet.dollars, remaining);
+    wallet.dollars -= use;
+    remaining -= use;
+    const after = (wallet.dollars || 0) + (wallet.skill || 0);
+    pushHistory(email, -use, `join:${id}`, after, 'dollars');
+    console.log('[joinDemo][dollars]', { email, used: use, remaining, after });
+  }
+  if (remaining > 0) {
+    const use = Math.min(wallet.skill || 0, remaining);
+    wallet.skill -= use;
+    remaining -= use;
+    const after = (wallet.dollars || 0) + (wallet.skill || 0);
+    pushHistory(email, -use, `join:${id}`, after, 'skill');
+    console.log('[joinDemo][skill]', { email, used: use, remaining, after });
+  }
 
-  return res.json({ success: true, joined: true, already: false, fee, balance: wallet.balance, eventId: id });
+  const combinedAfter = (wallet.dollars || 0) + (wallet.skill || 0);
+  regSet.add(email);
+  return res.json({ success: true, joined: true, already: false, fee, balance: combinedAfter, eventId: id });
 });
 
 // ---------- Credits ----------
 app.get('/api/credits/:email', (req, res) => {
   const email = k(decodeURIComponent(req.params.email || ''));
   const wallet = getUserCredits(email);
-  return res.json({ success: true, balance: wallet.balance });
+  return res.json({ success: true, balance: (wallet.dollars || 0) + (wallet.skill || 0) });
+});
+
+// Wallet breakdown (dollars, skill, combined)
+app.get('/api/credits/:email/detail', (req, res) => {
+  const email = k(decodeURIComponent(req.params.email || ''));
+  const w = getUserCredits(email);
+  const dollars = Number(w.dollars || 0);
+  const skill = Number(w.skill || 0);
+  return res.json({ success: true, dollars, skill, combined: dollars + skill });
 });
 
 // New: apply any delta with a note; logs history
@@ -188,13 +215,35 @@ app.post('/api/credits/apply', (req, res) => {
   const email = k(req.body?.email);
   const delta = Number(req.body?.delta);
   const note = req.body?.note;
+  const overrideWallet = (req.body?.wallet || '').toString().toLowerCase(); // optional: 'skill' | 'dollars'
   if (!email || !Number.isFinite(delta)) {
     return res.status(400).json({ success: false, error: 'email and numeric delta required' });
   }
-  const wallet = getUserCredits(email);
-  wallet.balance += delta;
-  pushHistory(email, delta, note, wallet.balance);
-  return res.json({ success: true, balance: wallet.balance });
+  const w = getUserCredits(email);
+
+  const isSkillCreditTag = (t) => /(^|\s)(promo|bonus|demo|skill\s*wallet|signup|referral)(\s|$)/i.test(String(t || ''));
+  const isSkillDebitTag  = (t) => /refund:skill|deduct:skill/i.test(String(t || ''));
+
+  let walletKey; // 'skill' | 'dollars'
+  if (overrideWallet === 'skill' || overrideWallet === 'dollars') {
+    walletKey = overrideWallet;
+  } else if (delta >= 0) {
+    walletKey = isSkillCreditTag(note) ? 'skill' : 'dollars';
+  } else {
+    walletKey = isSkillDebitTag(note) ? 'skill' : 'dollars';
+  }
+  console.log('[credits.apply]', { email, delta, note, overrideWallet, walletKey });
+
+  const amt = Math.abs(delta);
+  if (delta >= 0) {
+    w[walletKey] = (w[walletKey] || 0) + amt;
+  } else {
+    w[walletKey] = Math.max(0, (w[walletKey] || 0) - amt);
+  }
+
+  const combined = (w.dollars || 0) + (w.skill || 0);
+  pushHistory(email, delta, note, combined, walletKey);
+  return res.json({ success: true, balance: combined, wallet: walletKey, walletBalances: { dollars: w.dollars || 0, skill: w.skill || 0 } });
 });
 
 // Keep: legacy grant; also logs history with a default note
@@ -203,10 +252,11 @@ app.post('/api/credits/grant', (req, res) => {
   if (!email || !Number.isFinite(delta)) {
     return res.status(400).json({ success: false, error: 'email and numeric delta required' });
   }
-  const wallet = getUserCredits(email);
-  wallet.balance += Number(delta);
-  pushHistory(email, Number(delta), 'grant', wallet.balance);
-  return res.json({ success: true, balance: wallet.balance });
+  const w = getUserCredits(email);
+  w.dollars = (w.dollars || 0) + Number(delta);
+  const combined = (w.dollars || 0) + (w.skill || 0);
+  pushHistory(email, Number(delta), 'grant', combined, 'dollars');
+  return res.json({ success: true, balance: combined });
 });
 
 // History feed (newest first). Optional query: limit, q (substring match on note)
