@@ -10,8 +10,10 @@ import AutoEventId from '../components/AutoEventId';
 import { useAuth } from '../providers/AuthProvider';
 import * as bank from '../services/balanceService';
 import { addEmail } from '../services/emailStore';
+import CreditsHelpCard from '../components/CreditsHelpCard';
+import { Ionicons } from '@expo/vector-icons';
 
-const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a';
+const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', GREEN = '#16a34a', RED = '#ef4444';
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/,'');
 const API = `${SERVER}/api`;
 
@@ -27,9 +29,19 @@ type HistRow = { ts: number; delta: number; note?: string | null; balanceAfter: 
 
 function toDollars(cents: number) {
   const n = Number(cents || 0);
-  return `$${(n / 100).toFixed(2)}`;
+  return `${(n / 100).toFixed(2)}`;
 }
 const fmtDelta = (n: number) => `${n >= 0 ? '+' : ''}${toDollars(n)}`;
+// Tag routing helpers: decide wallet color and badge based on note
+const isSkillTag = (note?: string | null) => /(^|\s)(promo|bonus|demo|skill\s*wallet|signup|referral)(\s|$)/i.test(String(note || ''));
+const badgeFor = (delta: number, note?: string | null) => {
+  if (delta < 0) return ''; // debits don't carry a wallet badge
+  return isSkillTag(note) ? '[Skill]' : '[Dollars]';
+};
+const colorForAmount = (delta: number, note?: string | null) => {
+  if (delta < 0) return RED;
+  return isSkillTag(note) ? ORANGE : GREEN;
+};
 
 async function getJSON<T=any>(path: string) {
   const res = await fetch(`${API}${path}`);
@@ -86,6 +98,19 @@ function msFromParts(h: string, m: string, s: string, ms: string) {
 const DEFAULT_DRILLS = ['FT','3PT'];
 
 export default function AdminScreen() {
+  // Lightweight collapsible section used to organize tag chips
+  const Section: React.FC<{ title: string; color?: string; open: boolean; onToggle: () => void }> = ({ title, color = '#9a9a9a', open, onToggle, children }) => (
+    <View style={{ marginTop: 8 }}>
+      <Pressable onPress={onToggle} hitSlop={8} style={({ pressed }) => [
+        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 },
+        pressed && { opacity: 0.9 }
+      ]}>
+        <Text style={{ color: '#fff', fontWeight: '800' }}>{title}</Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={color} />
+      </Pressable>
+      {open ? <View style={{ marginTop: 6 }}>{children}</View> : null}
+    </View>
+  );
   const { user } = useAuth();
   // --- Admin balance quick chip ---
 const [adminBalCents, setAdminBalCents] = useState<number | null>(null);
@@ -165,6 +190,34 @@ const refreshMyBalance = useCallback(async () => {
   const [gEmail, setGEmail] = useState('test@ballskill.com');
   const [gDelta, setGDelta] = useState('2500'); // cents
   const [gNote, setGNote] = useState('');       // note
+  // Collapsible groups for tag chips
+  const [showSkillTags, setShowSkillTags] = useState(false);
+  const [showDollarTags, setShowDollarTags] = useState(false);
+  const [showDeductTags, setShowDeductTags] = useState(false);
+  const appendNote = (tag: string) => {
+    setGNote(prev => {
+      const cur = (prev || '').trim();
+      const t = tag.trim();
+      if (!cur) return t;
+      // avoid duplicate tags if the note already ends with it
+      if (new RegExp(`(^|\\s)${t}(\\s|$)`, 'i').test(cur)) return cur;
+      return `${cur} ${t}`;
+    });
+  };
+
+  // Append a tag to the note if not present
+function addTag(note: string, tag: string) {
+  const n = String(note || '');
+  const has = new RegExp(`(^|\\s)${tag}(\\s|$)`, 'i').test(n);
+  return has ? n : (n ? `${n} ${tag}` : tag);
+}
+
+// Force the delta string to be negative
+function forceNegativeDelta(value: string | number) {
+  const n = Math.abs(Number(value) || 0);
+  return `-${n}`;
+}
+
   const [gBusy, setGBusy] = useState(false);
   const [gBal, setGBal] = useState<number | null>(null);
   const [gBalLoading, setGBalLoading] = useState(false);
@@ -464,7 +517,7 @@ const refreshMyBalance = useCallback(async () => {
           <Text style={{ color:'#fff', fontWeight:'800' }}>My Balance</Text>
           <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:8 }}>
             <Text style={{ color:'#9a9a9a', fontVariant:['tabular-nums'] }}>
-              {adminBalCents == null ? '—' : `$${(adminBalCents/100).toFixed(2)}`}
+              {adminBalCents == null ? '—' : `${(adminBalCents/100).toFixed(2)}`}
             </Text>
             <Pressable
               onPress={refreshMyBalance}
@@ -494,7 +547,8 @@ const refreshMyBalance = useCallback(async () => {
         {/* Grant / Deduct */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
-
+          <CreditsHelpCard />
+          
           {/* Email */}
           <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
           <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
@@ -568,6 +622,129 @@ const refreshMyBalance = useCallback(async () => {
             value={gNote}
             onChangeText={setGNote}
           />
+          {/* Tag organizer (collapsible groups) */}
+          <Section
+            title="Credit tags — Skill wallet (orange)"
+            color={ORANGE}
+            open={showSkillTags}
+            onToggle={() => setShowSkillTags(v => !v)}
+          >
+            <View style={[s.chipRow, { marginTop: 2 }]}>
+              {['promo','bonus','demo','signup','referral'].map(tag => (
+                <TouchableOpacity key={tag} style={s.chip} onPress={() => appendNote(tag)}>
+                  <Text style={[s.chipText, { color: ORANGE }]}>[{tag}]</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </Section>
+
+          <Section
+            title="Credit tags — Dollars wallet (green)"
+            color={GREEN}
+            open={showDollarTags}
+            onToggle={() => setShowDollarTags(v => !v)}
+          >
+            <View style={[s.chipRow, { marginTop: 2 }]}>
+              {['prize','payout','purchase','won'].map(tag => (
+                <TouchableOpacity key={tag} style={s.chip} onPress={() => appendNote(tag)}>
+                  <Text style={[s.chipText, { color: GREEN }]}>[{tag}]</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </Section>
+
+          <Section
+            title="Deduction / Refund tags (red)"
+            color={RED}
+            open={showDeductTags}
+            onToggle={() => setShowDeductTags(v => !v)}
+          >
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
+              {/* Refund from Skill wallet (promo-type tag routes it to Skill) */}
+              <Pressable
+                onPress={() => {
+                  setGNote(n => addTag(n, 'refund:skill'));
+                  setGDelta(d => forceNegativeDelta(d as any));
+                }}
+                style={({ pressed }) => [
+                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+                  pressed && { opacity: 0.9 }
+                ]}
+              >
+                <Text style={{ color: RED, fontWeight: '800' }}>[refund:skill]</Text>
+              </Pressable>
+
+              {/* Refund from Dollars wallet */}
+              <Pressable
+                onPress={() => {
+                  setGNote(n => addTag(n, 'refund:dollars'));
+                  setGDelta(d => forceNegativeDelta(d as any));
+                }}
+                style={({ pressed }) => [
+                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+                  pressed && { opacity: 0.9 }
+                ]}
+              >
+                <Text style={{ color: RED, fontWeight: '800' }}>[refund:dollars]</Text>
+              </Pressable>
+
+              {/* Manual deduct from Skill (use promo tag family to route to Skill) */}
+              <Pressable
+                onPress={() => {
+                  setGNote(n => addTag(addTag(n, 'deduct:skill'), 'promo'));
+                  setGDelta(d => forceNegativeDelta(d as any));
+                }}
+                style={({ pressed }) => [
+                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+                  pressed && { opacity: 0.9 }
+                ]}
+              >
+                <Text style={{ color: RED, fontWeight: '800' }}>[deduct:skill]</Text>
+              </Pressable>
+
+              {/* Manual deduct from Dollars */}
+              <Pressable
+                onPress={() => {
+                  setGNote(n => addTag(n, 'deduct:dollars'));
+                  setGDelta(d => forceNegativeDelta(d as any));
+                }}
+                style={({ pressed }) => [
+                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+                  pressed && { opacity: 0.9 }
+                ]}
+              >
+                <Text style={{ color: RED, fontWeight: '800' }}>[deduct:dollars]</Text>
+              </Pressable>
+
+              {/* Penalty (Dollars) */}
+              <Pressable
+                onPress={() => {
+                  setGNote(n => addTag(n, 'penalty'));
+                  setGDelta(d => forceNegativeDelta(d as any));
+                }}
+                style={({ pressed }) => [
+                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+                  pressed && { opacity: 0.9 }
+                ]}
+              >
+                <Text style={{ color: RED, fontWeight: '800' }}>[penalty]</Text>
+              </Pressable>
+
+              {/* Adjustment (Dollars) */}
+              <Pressable
+                onPress={() => {
+                  setGNote(n => addTag(n, 'adjustment'));
+                  setGDelta(d => forceNegativeDelta(d as any));
+                }}
+                style={({ pressed }) => [
+                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+                  pressed && { opacity: 0.9 }
+                ]}
+              >
+                <Text style={{ color: RED, fontWeight: '800' }}>[adjustment]</Text>
+              </Pressable>
+            </View>
+          </Section>
 
           {/* Actions */}
           <View style={{ flexDirection:'row', gap:10 }}>
@@ -643,13 +820,16 @@ const refreshMyBalance = useCallback(async () => {
             ) : (
               <ScrollView style={s.historyScroll} nestedScrollEnabled>
                 {displayRows.map((it, idx) => {
-                  const color = it.delta >= 0 ? '#2ecc71' : '#ff4d4f';
+                  const color = colorForAmount(it.delta, it.note);
+                  const badge = badgeFor(it.delta, it.note);
                   const when = new Date(it.ts).toLocaleString();
                   const hasNote = !!(it.note && it.note.length);
                   return (
                     <View key={idx} style={s.historyRow}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
-                        <Text style={[s.histDelta, { color }]}>{fmtDelta(it.delta)}</Text>
+                        <Text style={[s.histDelta, { color }]}>
+                          {fmtDelta(it.delta)}{badge ? ' ' : ''}<Text style={{ color }}>{badge}</Text>
+                        </Text>
                         <Text style={s.histWhen}>{when}</Text>
                       </View>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4, alignItems:'center' }}>

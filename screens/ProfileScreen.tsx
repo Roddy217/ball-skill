@@ -86,6 +86,21 @@ type CreditEntry = {
   balanceAfter: number;    // cents
 };
 
+// ---- Wallet routing helpers (shared) ----
+const SKILL_COLOR   = '#FF6600';  // orange
+const DOLLARS_COLOR = '#16a34a';  // green
+const DEBIT_COLOR   = '#ef4444';  // red
+
+/** Detects whether a note should route to the Skill wallet (promo/bonus/demo/etc.) */
+const isSkillTag = (note?: string | null) =>
+  /(^|\s)(promo|bonus|demo|skill wallet|signup|referral)(\s|$)/i.test(String(note || ''));
+
+/** Returns the color to use for an amount, based on delta + note tags */
+const colorForAmount = (delta: number, note?: string | null) => {
+  if (delta < 0) return DEBIT_COLOR;
+  return isSkillTag(note) ? SKILL_COLOR : DOLLARS_COLOR;
+};
+
 // --- UI ---
 type JoinFilter = 'ALL' | 'SOONEST' | 'NEWEST' | 'IN_PERSON' | 'ONLINE';
 
@@ -764,10 +779,10 @@ export default function ProfileScreen() {
                               <Text style={s.histMeta}>{new Date(it.ts).toLocaleString()}</Text>
                             </View>
                             <View style={{ alignItems: 'flex-end' }}>
-                              <Text style={it.delta >= 0 ? s.histDeltaPlus : s.histDeltaMinus}>
-                                {it.delta >= 0 ? '+' : '–'}${fmtDollars(Math.abs(it.delta))}
-                              </Text>
-                              <Text style={s.histBal}>Bal: ${fmtDollars(it.balanceAfter)}</Text>
+                            <Text style={[s.histDeltaPlus, { color: colorForAmount(it.delta, it.note) }]}>
+                              {it.delta >= 0 ? '+' : '−'}${fmtDollars(Math.abs(it.delta))}
+                              {it.delta >= 0 ? (isSkillTag(it.note) ? ' [Skill]' : ' [Dollars]') : ''}
+                            </Text>
                             </View>
                           </View>
                         ))}
@@ -930,4 +945,8 @@ chip: {
   selectorBtn: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.BORDER, backgroundColor: '#1b1b1e' },
   selectorText: { color: colors.TEXT, fontWeight: '800', fontSize: 14 },
   selectorLabel: { color: colors.TEXT, fontWeight: '800' },
+
+  txAmtSkill: { color: '#FF6600', fontWeight: '900' },   // orange
+  txAmtDollars: { color: '#16a34a', fontWeight: '900' }, // green
+  txAmtDebit: { color: '#ef4444', fontWeight: '900' },   // red
 });
