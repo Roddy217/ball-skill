@@ -123,7 +123,15 @@ app.get('/api/ping', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 app.get('/api/admin/ping', (_req, res) => res.json({ ok: true, admin: false, ts: Date.now() }));
 
 // ---------- Events ----------
-app.get('/api/events', (_req, res) => res.json({ success: true, events }));
+// List all events (includes participantCounts & computed registered)
+app.get('/api/events', (_req, res) => {
+  const list = (events || []).map(ev => {
+    const counts = ev.participantCounts || { teen: 0, adult: 0, pro: 0, celebrity: 0 };
+    const registered = counts.teen + counts.adult + counts.pro + counts.celebrity;
+    return { ...ev, registered };
+  });
+  return res.json({ success: true, events: list });
+});
 
 app.post('/api/events', (req, res) => {
   const { name, feeCents = 0, locationType = 'online', drillsEnabled = [] } = req.body || {};
@@ -136,9 +144,41 @@ app.post('/api/events', (req, res) => {
     locationType,
     feeCents: Number(feeCents) || 0,
     drillsEnabled: Array.isArray(drillsEnabled) ? drillsEnabled : [],
+    totalSpots: Number(req.body?.totalSpots) || 100,
+    participantCounts: { teen: 0, adult: 0, pro: 0, celebrity: 0 },
   };
   events.push(ev);
   return res.json({ success: true, event: ev });
+});
+
+// Get one event by id (includes computed registered)
+app.get('/api/events/:id', (req, res) => {
+  const { id } = req.params;
+  const ev = events.find(e => e.id === id);
+  if (!ev) return res.status(404).json({ success: false, error: 'event_not_found' });
+  const counts = ev.participantCounts || { teen: 0, adult: 0, pro: 0, celebrity: 0 };
+  const registered = counts.teen + counts.adult + counts.pro + counts.celebrity;
+  return res.json({ success: true, event: { ...ev, registered } });
+});
+
+// Upsert participant counts (admin/dev). Body: { teen?, adult?, pro?, celebrity?, totalSpots? }
+app.post('/api/events/:id/participants', (req, res) => {
+  const { id } = req.params;
+  const ev = events.find(e => e.id === id);
+  if (!ev) return res.status(404).json({ success: false, error: 'event_not_found' });
+  const counts = ev.participantCounts || (ev.participantCounts = { teen: 0, adult: 0, pro: 0, celebrity: 0 });
+  const toInt = (v) => Number.isFinite(Number(v)) ? Math.max(0, Math.floor(Number(v))) : undefined;
+  const teen = toInt(req.body?.teen);
+  const adult = toInt(req.body?.adult);
+  const pro = toInt(req.body?.pro);
+  const celebrity = toInt(req.body?.celebrity);
+  if (typeof teen === 'number') counts.teen = teen;
+  if (typeof adult === 'number') counts.adult = adult;
+  if (typeof pro === 'number') counts.pro = pro;
+  if (typeof celebrity === 'number') counts.celebrity = celebrity;
+  if (Number.isFinite(Number(req.body?.totalSpots))) ev.totalSpots = Math.max(0, Math.floor(Number(req.body.totalSpots)));
+  const registered = counts.teen + counts.adult + counts.pro + counts.celebrity;
+  return res.json({ success: true, event: { ...ev, registered } });
 });
 
 // Registration status (idempotent check)

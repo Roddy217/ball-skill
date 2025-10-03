@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Pressable,
-  Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Linking
+  Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Linking, Switch
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from '@react-navigation/native';
@@ -95,6 +95,18 @@ function msFromParts(h: string, m: string, s: string, ms: string) {
   return (((H * 60 + M) * 60 + S) * 1000) + MS;
 }
 
+// ---- Participants API helpers (demo tool) ----
+async function fetchEventsListLite(): Promise<Array<{ id: string; name?: string }>> {
+  const data = await getJSON<{ success: boolean; events: Array<{ id: string; name?: string }> }>(`/events`);
+  return data?.events || [];
+}
+async function upsertParticipants(
+  eventId: string,
+  payload: { teen?: number; adult?: number; pro?: number; celebrity?: number; totalSpots?: number; }
+) {
+  return postJSON(`/events/${encodeURIComponent(eventId)}/participants`, payload);
+}
+
 const DEFAULT_DRILLS = ['FT','3PT'];
 
 export default function AdminScreen() {
@@ -161,8 +173,70 @@ const refreshMyBalance = useCallback(async () => {
   }, []);
   useEffect(() => { reloadEvents(); }, [reloadEvents]);
 
+  // --- Demo: Participant Editor toggle + fields ---
+  const [demoParticipantsEnabled, setDemoParticipantsEnabled] = useState(false);
+  const [peEventId, setPeEventId] = useState('');
+  const [peTeen, setPeTeen] = useState<string>('');
+  const [peAdult, setPeAdult] = useState<string>('');
+  const [pePro, setPePro] = useState<string>('');
+  const [peCeleb, setPeCeleb] = useState<string>('');
+  const [peTotalSpots, setPeTotalSpots] = useState<string>('100');
+  const [peLoading, setPeLoading] = useState(false);
+  const [peEvents, setPeEvents] = useState<Array<{ id: string; name?: string }>>([]);
+
+  // Auto-select first event after loading if none selected
+  useEffect(() => {
+    if (!peEventId && peEvents.length > 0) {
+      setPeEventId(peEvents[0].id);
+    }
+  }, [peEvents, peEventId]);
+
+  const loadEventsIntoPicker = useCallback(async () => {
+    try {
+      setPeLoading(true);
+      const list = await fetchEventsListLite();
+      if (list.length > 0) {
+        setPeEvents(list.map((e) => ({ id: e.id, name: e.name })));
+        setPeEventId((prev) => prev || list[0].id);
+      } else {
+        setPeEvents([]);
+      }
+    } catch (e) {
+      console.warn('[Admin][participants] load events failed', e);
+    } finally {
+      setPeLoading(false);
+    }
+  }, [peEventId]);
+  
+  const saveParticipants = useCallback(async () => {
+    if (!peEventId) { Alert.alert('Missing', 'Select or paste an Event ID.'); return; }
+    try {
+      setPeLoading(true);
+      const payload = {
+        teen: peTeen !== '' ? Math.max(0, Math.floor(Number(peTeen) || 0)) : undefined,
+        adult: peAdult !== '' ? Math.max(0, Math.floor(Number(peAdult) || 0)) : undefined,
+        pro: pePro !== '' ? Math.max(0, Math.floor(Number(pePro) || 0)) : undefined,
+        celebrity: peCeleb !== '' ? Math.max(0, Math.floor(Number(peCeleb) || 0)) : undefined,
+        totalSpots: peTotalSpots !== '' ? Math.max(0, Math.floor(Number(peTotalSpots) || 0)) : undefined,
+      };
+      const res = await upsertParticipants(peEventId, payload);
+      if (!res?.success) {
+        console.warn('[Admin][participants] save failed', res);
+        Alert.alert('Participants', 'Save failed');
+      } else {
+        Alert.alert('Participants', 'Updated successfully');
+      }
+    } catch (e) {
+      console.warn('[Admin][participants] save error', e);
+      Alert.alert('Participants', 'Save error');
+    } finally {
+      setPeLoading(false);
+    }
+  }, [peEventId, peTeen, peAdult, pePro, peCeleb, peTotalSpots]);
+
   // Seed
   const [seedBusy, setSeedBusy] = useState(false);
+
   const doSeed = useCallback(async () => {
     setSeedBusy(true);
     try {
@@ -847,6 +921,7 @@ function forceNegativeDelta(value: string | number) {
                   );
                 })}
                 <View style={{ height: 6 }} />
+                
               </ScrollView>
             )}
           </View>
@@ -938,6 +1013,81 @@ function forceNegativeDelta(value: string | number) {
 
         {/* spacer so last control never hides behind keyboard */}
         <View style={{ height: 40 }} />
+
+     {/* -------- Demo: Participant Editor (toggleable) -------- */}
+     <View style={{ marginTop: 24, padding: 12, borderRadius: 8, backgroundColor: '#111', borderColor: '#333', borderWidth: 1 }}>
+       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+         <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>Demo: Participant Editor</Text>
+         <Switch value={demoParticipantsEnabled} onValueChange={setDemoParticipantsEnabled} />
+       </View>
+       {demoParticipantsEnabled && (
+         <View style={{ marginTop: 12, gap: 10 }}>
+           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+             <TouchableOpacity onPress={loadEventsIntoPicker} disabled={peLoading} style={{ paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#222', borderRadius: 6 }}>
+               <Text style={{ color: '#fff' }}>{peLoading ? 'Loading…' : 'Load Events'}</Text>
+             </TouchableOpacity>
+             <Text style={{ color: '#aaa', fontSize: 12 }}>{peEvents.length ? `${peEvents.length} events` : 'No events yet'}</Text>
+           </View>
+
+           {/* Event ID field (paste from /api/events) */}
+           <Text style={{ color: '#ccc', marginTop: 4 }}>Event ID</Text>
+           <TextInput
+             placeholder="paste event id"
+             placeholderTextColor="#777"
+             value={peEventId}
+             onChangeText={setPeEventId}
+             autoCapitalize="none"
+             autoCorrect={false}
+             style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
+           />
+           {!!peEvents.length && (
+             <Text style={{ color: '#888', fontSize: 12 }}>Hint: {peEvents[0]?.id} — {peEvents[0]?.name || ''}</Text>
+           )}
+           {/* Quick-pick event ID buttons */}
+           {peEvents.length > 0 && (
+             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+               {peEvents.slice(0, 5).map(e => (
+                 <TouchableOpacity key={e.id} onPress={() => setPeEventId(e.id)} style={{ borderColor: '#333', borderWidth: 1, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10 }}>
+                   <Text style={{ color: '#fff', fontSize: 12 }}>{e.name || 'Event'} · {e.id}</Text>
+                 </TouchableOpacity>
+               ))}
+             </View>
+           )}
+
+           {/* Counts */}
+           <View style={{ flexDirection: 'row', gap: 8 }}>
+             <View style={{ flex: 1 }}>
+               <Text style={{ color: '#9ecbff' }}>Teens</Text>
+               <TextInput value={peTeen} onChangeText={setPeTeen} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+             </View>
+             <View style={{ flex: 1 }}>
+               <Text style={{ color: '#7DFF70' }}>Adults</Text>
+               <TextInput value={peAdult} onChangeText={setPeAdult} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+             </View>
+           </View>
+           <View style={{ flexDirection: 'row', gap: 8 }}>
+             <View style={{ flex: 1 }}>
+               <Text style={{ color: '#FFB84D' }}>Pro</Text>
+               <TextInput value={pePro} onChangeText={setPePro} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+             </View>
+             <View style={{ flex: 1 }}>
+               <Text style={{ color: '#FF6B6B' }}>Celebrity</Text>
+               <TextInput value={peCeleb} onChangeText={setPeCeleb} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+             </View>
+           </View>
+
+           {/* Total spots */}
+           <Text style={{ color: '#ccc', marginTop: 4 }}>Total Spots</Text>
+           <TextInput value={peTotalSpots} onChangeText={setPeTotalSpots} keyboardType="number-pad" placeholder="100" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+
+           <TouchableOpacity onPress={saveParticipants} disabled={peLoading || !peEventId} style={{ marginTop: 8, backgroundColor: '#FF6600', paddingVertical: 12, borderRadius: 6, alignItems: 'center' }}>
+             <Text style={{ color: '#000', fontWeight: '800' }}>{peLoading ? 'Saving…' : 'Save Participant Counts'}</Text>
+           </TouchableOpacity>
+
+           <Text style={{ color: '#888', fontSize: 12, marginTop: 6 }}>Demo-only tool – toggle off to hide. Remove this block later by searching for “Demo: Participant Editor”.</Text>
+         </View>
+       )}
+     </View>   
       </ScrollView>
     </KeyboardAvoidingView>
   );
