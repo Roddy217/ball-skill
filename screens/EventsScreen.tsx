@@ -6,9 +6,9 @@ import colors from '../theme/colors';
 import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
 import { useFocusEffect } from '@react-navigation/native';
 import * as api from '../services/api';
-import IdChip from '../components/IdChip';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import { useAuth } from '../providers/AuthProvider';
+import * as Clipboard from 'expo-clipboard';
 
 console.log('[Events] api keys:', Object.keys(api));
 
