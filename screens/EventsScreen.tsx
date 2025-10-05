@@ -175,15 +175,29 @@ function LiveEventsSection({
         <View style={{ marginTop: 8, gap: 12 }}>
           {events.map((ev:any) => (
             <View key={ev.id} style={{ backgroundColor: '#111', borderColor: '#2a2a2a', borderWidth: 1, borderRadius: 12, padding: 12 }}>
-            <Text style={{ color:'#fff', fontWeight:'800' }}>{ev.name || 'Event'}</Text>
-            <Text style={{ color:'#9a9a9a', marginTop: 2 }}>{new Date(ev.dateISO || Date.now()).toLocaleString()}</Text>
-            {ev.feeCents != null && (
-              <Text style={{ color:'#9a9a9a', marginTop: 2 }}>Fee: ${(Number(ev.feeCents)/100).toFixed(2)}</Text>
-            )}
-            <Text style={{ color:'#9a9a9a', marginTop: 2 }}>ID: {ev.id}</Text>
-            {ev.participantCounts && (
-              <ParticipantBreakdown totalSpots={ev.totalSpots} counts={ev.participantCounts} />
-            )}
+            {/* Header row: title left, fee chip right */}
+            <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+              <Text style={{ color:'#fff', fontWeight:'800', flexShrink:1 }} numberOfLines={1}>
+                {ev.name || 'Event'}
+              </Text>
+              {ev.feeCents != null && (
+                <View style={s.feeChip}><Text style={s.feeChipText}>${(Number(ev.feeCents)/100).toFixed(2)}</Text></View>
+              )}
+            </View>
+
+            <Text style={{ color:'#9a9a9a', marginTop: 2 }}>
+              {new Date(ev.dateISO || Date.now()).toLocaleString()}
+            </Text>
+
+            {/* Copyable Event ID chip */}
+            <Pressable onPress={() => copyEventId(ev.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
+              <Text style={s.idChipText}>ID: {ev.id}</Text>
+            </Pressable>
+
+            {/* Participants bar & counts (if server provided) */}
+            {ev?.participantCounts ? (
+              <ParticipantBreakdown totalSpots={ev?.totalSpots ?? 100} counts={ev.participantCounts} />
+            ) : null}
           
             {/* Wallet picker for live join */}
             <Text style={{ color:'#cfcfcf', marginTop:10, fontSize:12, fontWeight:'700' }}>Join with wallet</Text>
@@ -255,6 +269,13 @@ export default function EventsScreen() {
     for (let i = 4; i <= 20; i++) first.push(generateEvent(i));
     return first;
   });
+
+  const copyEventId = useCallback(async (id: string) => {
+    try {
+      await Clipboard.setStringAsync(String(id));
+      Alert.alert('Copied', 'Event ID copied to clipboard.');
+    } catch {}
+  }, []);
 
   const PAGE_SIZE = 10;
   const MAX_DEMO_EVENTS = 30; // hard cap to stop endless demo generation
@@ -711,6 +732,7 @@ useFocusEffect(
             onUnjoin={() => onUnjoin(item)}
             getWallet={getDemoJoinWallet}
             setWallet={setJoinWalletByDemo}
+            onCopyId={copyEventId}
           />
         )}
         ListHeaderComponent={ChipsHeader}
@@ -756,7 +778,7 @@ function Chip({ label, active, onPress }: { label: string; active?: boolean; onP
   );
 }
 
-function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWallet }: {
+function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWallet, onCopyId }: {
   item: EventItem;
   joined: boolean;
   joining: boolean;
@@ -764,12 +786,13 @@ function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWall
   onUnjoin: () => void;
   getWallet: (id: string) => 'skill'|'dollars';
   setWallet: React.Dispatch<React.SetStateAction<Record<string,'skill'|'dollars'>>>;
+  onCopyId: (id: string) => void;
 }) {
   return (
     <View style={s.card}>
-      <View style={s.rowBetween}>
+      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
         <Text style={s.title} numberOfLines={1}>{item.title}</Text>
-        <View style={s.priceBadge}><Text style={s.priceText}>${item.fee}</Text></View>
+        <View style={s.feeChip}><Text style={s.feeChipText}>${Number(item.fee).toFixed(2)}</Text></View>
       </View>
 
       <View style={s.metaRow}>
@@ -781,10 +804,10 @@ function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWall
         <Text style={s.metaText}>{item.locationType === 'online' ? 'Online' : item.venue ?? 'In person'}</Text>
       </View>
 
-<View style={s.idRow}>
-  <IdChip id={item.id} withCopy />
-  <Text style={s.createdText}>Created {new Date(item.startTs).toLocaleDateString()}</Text>
-</View>
+      <Pressable onPress={() => onCopyId(item.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
+        <Text style={s.idChipText}>ID: {item.id}</Text>
+      </Pressable>
+      <Text style={s.createdText}>Created {new Date(item.startTs).toLocaleDateString()}</Text>
 
       {item.drills?.length ? (
         <View style={s.drillChipsRow}>
@@ -886,6 +909,8 @@ const s = StyleSheet.create({
   },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { color: colors.TEXT, fontSize: 18, fontWeight: '800', flex: 1, paddingRight: 8 },
+
+  // (kept for backward compatibility if referenced elsewhere; not used after feeChip introduction)
   priceBadge: {
     backgroundColor: '#1f1f22',
     borderColor: colors.BORDER,
@@ -901,6 +926,7 @@ const s = StyleSheet.create({
   metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
   metaIcon: { marginRight: 6, marginTop: 1 },
   metaText: { color: colors.MUTED_TEXT, fontSize: 13 },
+  subtle: { color: '#9a9a9a', marginTop: 2 },
 
   drillChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
   drillChip: {
@@ -914,39 +940,43 @@ const s = StyleSheet.create({
   drillChipText: { color: colors.TEXT, fontSize: 12, fontWeight: '700' },
 
   idRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
-  createdText: { color: colors.MUTED_TEXT, fontSize: 11 },
+  idChip: {
+    marginTop: 6,
+    alignSelf: 'flex-start',
+    borderColor: '#333',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: '#141414',
+  },
+  idChipText: { color: '#cfcfcf', fontWeight: '800' },
+  createdText: { color: '#9a9a9a', fontSize: 11, marginTop: 2 },
 
-  footerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  spotsText: { color: colors.MUTED_TEXT, fontSize: 13 },
-
+  footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 },
+  spotsText: { color: '#cfcfcf', fontSize: 12 },
   ctaBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: colors.ORANGE,
     borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
   },
   ctaBtnDisabled: { backgroundColor: '#a9a9a9' },
-  ctaText: { color: colors.WHITE, fontWeight: '800', fontSize: 14 },
+  ctaText: { color: colors.WHITE, fontWeight: '800' },
 
-  footerLoading: { paddingVertical: 18, alignItems: 'center' },
-  footerEnd: { paddingVertical: 14, alignItems: 'center' },
-  endText: { color: colors.MUTED_TEXT, fontSize: 12 },
+  feeChip: {
+    backgroundColor: '#FF6600',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  feeChipText: { color: '#000', fontWeight: '900', fontVariant: ['tabular-nums'] },
+
+  footerLoading: { paddingVertical: 16 },
+  footerEnd: { paddingVertical: 16, alignItems: 'center' },
+  endText: { color: '#9a9a9a' },
 });
-
-
-// Helpers for demo wallet simulation
-export async function getDemoWalletOffsets(email: string): Promise<{ skill: number; dollars: number }> {
-  try {
-    const raw = await AsyncStorage.getItem(`demoWalletOffsets:${(email||'').toLowerCase()}`);
-    if (!raw) return { skill: 0, dollars: 0 };
-    const o = JSON.parse(raw);
-    return { skill: Number(o?.skill||0), dollars: Number(o?.dollars||0) };
-  } catch { return { skill: 0, dollars: 0 }; }
-}
-
-export async function isDemoSimEnabled(): Promise<boolean> {
-  try { return (await AsyncStorage.getItem('demoSimEnabled')) === '1'; } catch { return false; }
-}
