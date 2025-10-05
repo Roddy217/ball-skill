@@ -99,37 +99,43 @@ app.post('/api/events/:id/join', (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     const email = String((req.body?.email || '')).trim().toLowerCase();
+    const walletIn = String(req.body?.wallet || 'dollars').toLowerCase();
+    const wallet = (walletIn === 'skill' || walletIn === 'dollars') ? walletIn : 'dollars';
+
     if (!email) return res.status(400).json({ success: false, error: 'missing_email' });
 
     // locate event (support array or map)
     const ev = events.find?.((e) => e.id === id) || (events[id] || null);
     if (!ev) return res.status(404).json({ success: false, error: 'event_not_found' });
     const feeCents = Number(ev.feeCents || 0);
+    if (!Number.isInteger(feeCents) || feeCents < 0) return res.status(400).json({ success: false, error: 'bad_fee' });
 
-    // Deduct from DOLLARS wallet (authoritative)
+    // Deduct from requested wallet
     let wallets;
     try {
-      wallets = deductFromWallet(email, 'dollars', feeCents, `event:${id}:join`);
+      wallets = deductFromWallet(email, wallet, feeCents, `event:${id}:join:${wallet}`);
     } catch (e) {
       if (e && e.message === 'insufficient_funds') {
-        return res.status(400).json({ success: false, error: 'insufficient_funds', wallet: 'dollars', ...(e.meta || {}) });
+        return res.status(400).json({ success: false, error: 'insufficient_funds', wallet, ...(e.meta || {}) });
       }
       console.error('[events.join] wallet error', e);
       return res.status(500).json({ success: false, error: 'wallet_error' });
     }
 
-    // register user (support array or dictionary)
+    // Ensure registrants is a dictionary: email -> { wallet, ts }
     if (Array.isArray(ev.registrants)) {
-      if (!ev.registrants.includes(email)) ev.registrants.push(email);
-    } else {
-      ev.registrants = ev.registrants || {};
-      ev.registrants[email] = true;
+      // migrate array to map (true -> assume dollars historical, but new joins store actual wallet)
+      const map = {};
+      for (const u of ev.registrants) map[String(u).toLowerCase()] = { wallet: 'dollars', ts: Date.now() };
+      ev.registrants = map;
+    } else if (!ev.registrants || typeof ev.registrants !== 'object') {
+      ev.registrants = {};
     }
-    ev.registered = Array.isArray(ev.registrants)
-      ? ev.registrants.length
-      : Object.keys(ev.registrants || {}).length;
 
-    return res.json({ success: true, event: { id: ev.id, registered: ev.registered, feeCents }, wallets });
+    ev.registrants[email] = { wallet, ts: Date.now() };
+    ev.registered = Object.keys(ev.registrants || {}).length;
+
+    return res.json({ success: true, event: { id: ev.id, registered: ev.registered, feeCents }, wallets, usedWallet: wallet });
   } catch (e) {
     console.error('[events.join] fatal', e);
     return res.status(500).json({ success: false, error: 'server_error' });
@@ -148,26 +154,31 @@ app.post('/api/events/:id/unjoin', (req, res) => {
     if (!ev) return res.status(404).json({ success: false, error: 'event_not_found' });
     const feeCents = Number(ev.feeCents || 0);
 
-    // remove registration
-    if (Array.isArray(ev.registrants)) {
-      ev.registrants = ev.registrants.filter((u) => u !== email);
-    } else if (ev.registrants && typeof ev.registrants === 'object') {
+    // derive previous wallet used to join
+    let usedWallet = 'dollars';
+    if (ev.registrants && typeof ev.registrants === 'object') {
+      const ent = ev.registrants[email];
+      if (ent && (ent.wallet === 'skill' || ent.wallet === 'dollars')) usedWallet = ent.wallet;
+      // remove registration
       delete ev.registrants[email];
+    } else if (Array.isArray(ev.registrants)) {
+      // legacy array
+      ev.registrants = ev.registrants.filter((u) => String(u).toLowerCase() !== email);
+    } else {
+      ev.registrants = {};
     }
-    ev.registered = Array.isArray(ev.registrants)
-      ? ev.registrants.length
-      : Object.keys(ev.registrants || {}).length;
+    ev.registered = Object.keys(ev.registrants || {}).length;
 
-    // Refund to DOLLARS wallet
+    // Refund to the same wallet
     let wallets;
     try {
-      wallets = addToWallet(email, 'dollars', feeCents, `event:${id}:refund`);
+      wallets = addToWallet(email, usedWallet, feeCents, `event:${id}:refund:${usedWallet}`);
     } catch (e) {
       console.error('[events.unjoin] wallet error', e);
       return res.status(500).json({ success: false, error: 'wallet_error' });
     }
 
-    return res.json({ success: true, event: { id: ev.id, registered: ev.registered, feeCents }, wallets });
+    return res.json({ success: true, event: { id: ev.id, registered: ev.registered, feeCents }, wallets, usedWallet });
   } catch (e) {
     console.error('[events.unjoin] fatal', e);
     return res.status(500).json({ success: false, error: 'server_error' });

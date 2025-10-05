@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { View, Text, ScrollView, TextInput, Switch, TouchableOpacity, StyleSheet, FlatList, Pressable, ActivityIndicator, Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
 import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
@@ -141,7 +142,23 @@ async function fetchServerEvents(): Promise<Array<any>> {
 }
 
 // ---- Live Events Section component ----
-function LiveEventsSection({ loading, events, onRefresh }: { loading: boolean; events: any[]; onRefresh: () => void }) {
+function LiveEventsSection({
+  loading, events, onRefresh,
+  joinedMap, joiningMap,
+  getJoinWallet, setJoinWalletByEvent,
+  onJoinLive, onUnjoinLive, hasEmail
+}: {
+  loading: boolean;
+  events: any[];
+  onRefresh: () => void;
+  joinedMap: Record<string, boolean>;
+  joiningMap: Record<string, boolean>;
+  getJoinWallet: (id: string) => 'skill' | 'dollars';
+  setJoinWalletByEvent: React.Dispatch<React.SetStateAction<Record<string, 'skill' | 'dollars'>>>;
+  onJoinLive: (ev: any) => void;
+  onUnjoinLive: (ev: any) => void;
+  hasEmail: boolean;
+}) {
   return (
     <View style={{ marginTop: 16, paddingHorizontal: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -158,16 +175,48 @@ function LiveEventsSection({ loading, events, onRefresh }: { loading: boolean; e
         <View style={{ marginTop: 8, gap: 12 }}>
           {events.map((ev:any) => (
             <View key={ev.id} style={{ backgroundColor: '#111', borderColor: '#2a2a2a', borderWidth: 1, borderRadius: 12, padding: 12 }}>
-              <Text style={{ color:'#fff', fontWeight:'800' }}>{ev.name || 'Event'}</Text>
-              <Text style={{ color:'#9a9a9a', marginTop: 2 }}>{new Date(ev.dateISO || Date.now()).toLocaleString()}</Text>
-              {ev.feeCents != null && (
-                <Text style={{ color:'#9a9a9a', marginTop: 2 }}>Fee: ${(Number(ev.feeCents)/100).toFixed(2)}</Text>
-              )}
-              <Text style={{ color:'#9a9a9a', marginTop: 2 }}>ID: {ev.id}</Text>
-              {ev.participantCounts && (
-                <ParticipantBreakdown totalSpots={ev.totalSpots} counts={ev.participantCounts} />
+            <Text style={{ color:'#fff', fontWeight:'800' }}>{ev.name || 'Event'}</Text>
+            <Text style={{ color:'#9a9a9a', marginTop: 2 }}>{new Date(ev.dateISO || Date.now()).toLocaleString()}</Text>
+            {ev.feeCents != null && (
+              <Text style={{ color:'#9a9a9a', marginTop: 2 }}>Fee: ${(Number(ev.feeCents)/100).toFixed(2)}</Text>
+            )}
+            <Text style={{ color:'#9a9a9a', marginTop: 2 }}>ID: {ev.id}</Text>
+            {ev.participantCounts && (
+              <ParticipantBreakdown totalSpots={ev.totalSpots} counts={ev.participantCounts} />
+            )}
+          
+            {/* Wallet picker for live join */}
+            <Text style={{ color:'#cfcfcf', marginTop:10, fontSize:12, fontWeight:'700' }}>Join with wallet</Text>
+            <View style={{ flexDirection:'row', gap:8, marginTop:10 }}>
+              <TouchableOpacity
+                onPress={() => setJoinWalletByEvent(prev => ({ ...prev, [ev.id]:'skill' }))}
+                style={{ paddingVertical:6, paddingHorizontal:10, borderRadius:6, borderWidth:1, borderColor: getJoinWallet(ev.id)==='skill' ? '#FFB84D' : '#333', backgroundColor: getJoinWallet(ev.id)==='skill' ? '#2a200f' : '#1a1a1a' }}
+              >
+                <Text style={{ color:'#fff', fontWeight:'800' }}>$Skill</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setJoinWalletByEvent(prev => ({ ...prev, [ev.id]:'dollars' }))}
+                style={{ paddingVertical:6, paddingHorizontal:10, borderRadius:6, borderWidth:1, borderColor: getJoinWallet(ev.id)==='dollars' ? '#7DFF70' : '#333', backgroundColor: getJoinWallet(ev.id)==='dollars' ? '#103014' : '#1a1a1a' }}
+              >
+                <Text style={{ color:'#fff', fontWeight:'800' }}>$Dollars</Text>
+              </TouchableOpacity>
+            </View>
+          
+            {/* Join/Unjoin */}
+            <View style={{ marginTop: 10, flexDirection:'row', justifyContent:'flex-end', alignItems:'center' }}>
+              {joiningMap[ev.id] ? (
+                <ActivityIndicator color="#fff" />
+              ) : joinedMap[ev.id] ? (
+                <TouchableOpacity onPress={() => onUnjoinLive(ev)} style={{ backgroundColor:'#a9a9a9', borderRadius:10, paddingVertical:8, paddingHorizontal:12 }}>
+                  <Text style={{ color:'#000', fontWeight:'800' }}>Joined • Unjoin</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity onPress={() => onJoinLive(ev)} disabled={!hasEmail} style={{ backgroundColor:'#FF6600', borderRadius:10, paddingVertical:8, paddingHorizontal:12 }}>
+                  <Text style={{ color:'#fff', fontWeight:'800' }}>Join Event</Text>
+                </TouchableOpacity>
               )}
             </View>
+          </View>
           ))}
         </View>
       )}
@@ -214,6 +263,61 @@ export default function EventsScreen() {
 
   const [joinedMap, setJoinedMap] = useState<Record<string, boolean>>({});
   const [joiningMap, setJoiningMap] = useState<Record<string, boolean>>({});
+  // Per-demo-event wallet choice (UI only, no server impact)
+  const [joinWalletByDemo, setJoinWalletByDemo] = useState<Record<string, 'skill'|'dollars'>>({});
+  const getDemoJoinWallet = useCallback((id: string) => joinWalletByDemo[id] || 'dollars', [joinWalletByDemo]);
+
+  // Per-event wallet choice for joining live events
+  const [joinWalletByEvent, setJoinWalletByEvent] = useState<Record<string, 'skill'|'dollars'>>({});
+  const getJoinWallet = useCallback((id: string) => joinWalletByEvent[id] || 'dollars', [joinWalletByEvent]);
+
+  // Demo wallet simulation (local-only offsets applied to Earnings screen when enabled)
+  const [demoSimEnabled, setDemoSimEnabled] = useState<boolean>(false);
+  // Displayed offsets (in cents) for current user when demo sim is ON
+  const [demoOffsets, setDemoOffsets] = useState<{ skill: number; dollars: number }>({ skill: 0, dollars: 0 });
+  const fmtMoney = useCallback((c: number) => `${c < 0 ? '-' : ''}$${(Math.abs(c) / 100).toFixed(2)}` , []);
+
+  const DEMO_SIM_KEY = 'demoSimEnabled';
+  const DEMO_OFFSETS_KEY = (email: string) => `demoWalletOffsets:${email}`;
+
+  const loadDemoSim = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(DEMO_SIM_KEY);
+      setDemoSimEnabled(raw === '1');
+    } catch {}
+  }, []);
+
+  const saveDemoSim = useCallback(async (on: boolean) => {
+    setDemoSimEnabled(on);
+    try { await AsyncStorage.setItem(DEMO_SIM_KEY, on ? '1' : '0'); } catch {}
+  }, []);
+
+  const loadDemoOffsets = useCallback(async (email: string) => {
+    if (!email) return { skill: 0, dollars: 0 };
+    try {
+      const raw = await AsyncStorage.getItem(DEMO_OFFSETS_KEY(email));
+      if (!raw) return { skill: 0, dollars: 0 };
+      const o = JSON.parse(raw);
+      return { skill: Number(o?.skill||0), dollars: Number(o?.dollars||0) };
+    } catch { return { skill: 0, dollars: 0 }; }
+  }, []);
+
+  const saveDemoOffsets = useCallback(async (email: string, offsets: { skill: number; dollars: number }) => {
+    if (!email) return;
+    try { await AsyncStorage.setItem(DEMO_OFFSETS_KEY(email), JSON.stringify(offsets)); } catch {}
+  }, []);
+
+  const resetDemoOffsets = useCallback(async (email: string) => {
+    if (!email) return;
+    try {
+      const zeros = { skill: 0, dollars: 0 };
+      await saveDemoOffsets(email, zeros);
+      setDemoOffsets(zeros);
+      Alert.alert('Demo offsets reset', 'Local demo wallet adjustments cleared for this user.');
+    } catch (e) {
+      Alert.alert('Reset failed', 'Could not clear demo offsets.');
+    }
+  }, [saveDemoOffsets]);
 
   // --- Demo: Participant Editor toggle + fields ---
   const [demoParticipantsEnabled, setDemoParticipantsEnabled] = useState(false);
@@ -338,6 +442,18 @@ export default function EventsScreen() {
     })();
   }, []);
 
+  // Load demo simulation flag on mount
+  useEffect(() => { loadDemoSim(); }, [loadDemoSim]);
+
+  // Load current offsets when demo sim toggles or user changes
+  useEffect(() => {
+    (async () => {
+      if (!hasEmail) { setDemoOffsets({ skill: 0, dollars: 0 }); return; }
+      const off = await loadDemoOffsets(userEmail);
+      setDemoOffsets(off);
+    })();
+  }, [demoSimEnabled, hasEmail, userEmail, loadDemoOffsets]);
+
   /// Also refresh API base whenever this screen gains focus (after Admin Save)
   useFocusEffect(
     useCallback(() => {
@@ -386,39 +502,105 @@ useFocusEffect(
         }
         } catch {}
       }
+
+  // Also prefetch joined status for live server events
+  for (const ev of serverEvents) {
+    if (joinedMap[ev.id] !== undefined) continue;
+    try {
+      const { registered } = await getRegistrationStatus(userEmail, ev.id);
+      if (!cancelled) {
+        setJoinedMap(prev => ({ ...prev, [ev.id]: !!registered }));
+      }
+    } catch {}
+  }
     })();
     return () => { cancelled = true; };
-  }, [visibleRows, userEmail, joinedMap]);
+  }, [visibleRows, userEmail, joinedMap, serverEvents]);
+
+  // ---- Live events join/unjoin using wallet v2 (component scope) ----
+  const onJoinLive = async (ev: any) => {
+    if (joiningMap[ev.id] || joinedMap[ev.id]) return;
+    if (!hasEmail) { Alert.alert('Sign in', 'Please sign in on the Profile tab to join this event.'); return; }
+
+    setJoiningMap(prev => ({ ...prev, [ev.id]: true }));
+    try {
+      const wallet = getJoinWallet(ev.id);
+      const res = await fetch(`${API}/events/${encodeURIComponent(ev.id)}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: userEmail, wallet }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'join failed');
+
+      setJoinedMap(prev => ({ ...prev, [ev.id]: true }));
+      saveJoinedMap(userEmail, { ...joinedMap, [ev.id]: true }).catch(() => {});
+
+      const fee = Math.abs(Number(ev.feeCents || ev.fee || 0) / 100);
+      Alert.alert('Joined', `Wallet: ${wallet}\nFee: $${fee.toFixed(2)}`);
+    } catch (e: any) {
+      Alert.alert('Join failed', e?.message || 'Unknown error');
+    } finally {
+      setJoiningMap(prev => ({ ...prev, [ev.id]: false }));
+    }
+  };
+
+  const onUnjoinLive = async (ev: any) => {
+    if (!hasEmail) { Alert.alert('Sign in', 'Please sign in on the Profile tab to unjoin this event.'); return; }
+    if (joiningMap[ev.id]) return;
+
+    Alert.alert('Unjoin event', `Refund for "${ev.name || ev.title || 'Event'}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Unjoin', style: 'destructive', onPress: async () => {
+          setJoiningMap(prev => ({ ...prev, [ev.id]: true }));
+          try {
+            const res = await fetch(`${API}/events/${encodeURIComponent(ev.id)}/unjoin`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: userEmail })
+            });
+            const data = await res.json();
+            if (!res.ok || !data?.success) throw new Error(data?.error || 'unjoin failed');
+
+            setJoinedMap(prev => ({ ...prev, [ev.id]: false }));
+            saveJoinedMap(userEmail, { ...joinedMap, [ev.id]: false }).catch(() => {});
+
+            const fee = Math.abs(Number(ev.feeCents || ev.fee || 0) / 100);
+            const used = data?.usedWallet || 'dollars';
+            Alert.alert('Unjoined', `Refunded $${fee.toFixed(2)} to ${used}`);
+          } catch (e: any) {
+            Alert.alert('Unjoin failed', e?.message || 'Unknown error');
+          } finally {
+            setJoiningMap(prev => ({ ...prev, [ev.id]: false }));
+          }
+        }
+      }
+    ]);
+  };
 
   const onJoin = async (evt: EventItem) => {
-    // guard: don't re-enter and don't auto-join when already joined
+    // Local-only join for demo events (no API calls)
     if (joiningMap[evt.id] || joinedMap[evt.id]) return;
-    if (!hasEmail) {
-      Alert.alert('Sign in', 'Please sign in on the Profile tab to join this event.');
-      return;
-    }
+    if (!hasEmail) { Alert.alert('Sign in', 'Please sign in on the Profile tab to join this event.'); return; }
 
     setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
     try {
-      const fee = Math.abs(Number(evt.fee) || 0);
-      if (fee > 0) {
-        await api.grantCredits(userEmail, -(fee * 100), `join:${evt.id}`);
-      }
-      await api.recordJoin(evt.id, userEmail);
+      const chosen = getDemoJoinWallet(evt.id);
       await setJoinedLocal(userEmail, evt.id, true);
-
-      // mark as joined locally
       setJoinedMap(prev => {
         const next = { ...prev, [evt.id]: true };
         saveJoinedMap(userEmail, next).catch(() => {});
         return next;
       });
-      
-
-      // fetch and show new balance (convert cents→dollars if needed)
-      const cents = await getBalance(userEmail);
-      const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
-      Alert.alert('Joined', `Fee: ${fee}\nNew balance: ${dollars}`);
+      Alert.alert('Joined (Demo)', `Wallet picked: ${chosen}  •  Fee: $${Math.abs(Number(evt.fee) || 0).toFixed(2)}\n(Local demo only; no wallet deducted)`);
+      // When enabled, simulate real wallet deduction locally (in cents)
+      if (demoSimEnabled) {
+        const feeCents = Math.round((Number(evt.fee)||0) * 100);
+        const current = await loadDemoOffsets(userEmail);
+        const w = chosen === 'skill' ? 'skill' : 'dollars';
+        const next = { ...current, [w]: Number(current[w]||0) - feeCents };
+        await saveDemoOffsets(userEmail, next);
+        setDemoOffsets(next);
+      }
     } catch (e: any) {
       Alert.alert('Join failed', e?.message || 'Unknown error');
     } finally {
@@ -428,53 +610,35 @@ useFocusEffect(
 
   // Chips header with API base badge
   const onUnjoin = async (evt: EventItem) => {
-    if (!hasEmail) {
-      Alert.alert('Sign in', 'Please sign in on the Profile tab to unjoin this event.');
-      return;
-    }
+    if (!hasEmail) { Alert.alert('Sign in', 'Please sign in on the Profile tab to unjoin this event.'); return; }
     if (joiningMap[evt.id]) return;
 
-    Alert.alert(
-      'Unjoin event',
-      `Refund ${Math.abs(Number(evt.fee) || 0)} for "${evt.title}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Unjoin',
-          style: 'destructive',
-          onPress: async () => {
-            setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
-            try {
-              // remove join on server
-              await api.unrecordJoin(evt.id, userEmail);
-              await setJoinedLocal(userEmail, evt.id, false);
-              
-              // persist local flag false
-              await setJoinedLocal(userEmail, evt.id, false);
-
-              // update in-memory state immediately so prefetch won't flip it back
-              setJoinedMap(prev => ({ ...prev, [evt.id]: false }));
-
-              // refund credits (cents)
-              const fee = Math.abs(Number(evt.fee) || 0);
-              if (fee > 0) {
-                await api.grantCredits(userEmail, fee * 100, `unjoin:${evt.id}`);
-              }
-
-              // show new balance
-              const cents = await getBalance(userEmail);
-              const dollars = typeof cents === 'number' ? (cents / 100).toFixed(2) : String(cents);
-              Alert.alert('Unjoined', `Refund: ${fee}\nNew balance: ${dollars}`);
-              console.log('[Events][Unjoin] new balance for', userEmail, '→', dollars);
-            } catch (e: any) {
-              Alert.alert('Unjoin failed', e?.message || 'Unknown error');
-            } finally {
-              setJoiningMap(prev => ({ ...prev, [evt.id]: false }));
+    Alert.alert('Unjoin event (Demo)', `Refund (simulated) $${Math.abs(Number(evt.fee) || 0).toFixed(2)} for "${evt.title}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Unjoin', style: 'destructive', onPress: async () => {
+          setJoiningMap(prev => ({ ...prev, [evt.id]: true }));
+          try {
+            await setJoinedLocal(userEmail, evt.id, false);
+            setJoinedMap(prev => ({ ...prev, [evt.id]: false }));
+            const picked = getDemoJoinWallet(evt.id);
+            Alert.alert('Unjoined (Demo)', `Refunded (simulated) to ${picked}.`);
+            if (demoSimEnabled) {
+              const feeCents = Math.round((Number(evt.fee)||0) * 100);
+              const current = await loadDemoOffsets(userEmail);
+              const w = picked === 'skill' ? 'skill' : 'dollars';
+              const next = { ...current, [w]: Number(current[w]||0) + feeCents };
+              await saveDemoOffsets(userEmail, next);
+              setDemoOffsets(next);
             }
-          },
-        },
-      ],
-    );
+          } catch (e: any) {
+            Alert.alert('Unjoin failed', e?.message || 'Unknown error');
+          } finally {
+            setJoiningMap(prev => ({ ...prev, [evt.id]: false }));
+          }
+        }
+      }
+    ]);
   };
   const ChipsHeader = (
     <View style={s.chipsSticky}>
@@ -489,6 +653,45 @@ useFocusEffect(
         <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
         <Chip label="Price ↓"    active={filter==='PRICE_DESC'} onPress={() => onSelectFilter('PRICE_DESC')} />
       </View>
+      <View style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingBottom:6 }}>
+        <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>Demo wallet simulation</Text>
+        <Switch value={demoSimEnabled} onValueChange={saveDemoSim} />
+      </View>
+      {demoSimEnabled && hasEmail && (
+  <View style={{ paddingHorizontal:16, marginTop:6, flexDirection:'row', alignItems:'center', justifyContent:'space-between' }}>
+    {/* Offsets badge */}
+    <View style={{ backgroundColor:'#1b1b1e', borderColor:'#444', borderWidth:1, borderRadius:8, paddingVertical:6, paddingHorizontal:10, maxWidth:'65%' }}>
+      <Text style={{ color:'#cfcfcf', fontSize:12 }}>
+        Skill: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.skill)}</Text>,
+        {' '}Dollars: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.dollars)}</Text>
+      </Text>
+    </View>
+
+    {/* Actions */}
+    <View style={{ flexDirection:'row', gap:8 }}>
+      <Pressable
+        onPress={() => resetDemoOffsets(userEmail)}
+        style={({ pressed }) => [{
+          alignSelf: 'flex-start',
+          borderColor: '#444', borderWidth: 1, borderRadius: 999,
+          paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
+        }, pressed && { opacity: 0.85 }]}
+      >
+        <Text style={{ color: '#FFB84D', fontWeight: '800', fontSize: 13 }}>Reset</Text>
+      </Pressable>
+      <Pressable
+        onPress={async () => { await resetDemoOffsets(userEmail); await saveDemoSim(false); }}
+        style={({ pressed }) => [{
+          alignSelf: 'flex-start',
+          borderColor: '#444', borderWidth: 1, borderRadius: 999,
+          paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
+        }, pressed && { opacity: 0.85 }]}
+      >
+        <Text style={{ color: '#FF6B6B', fontWeight: '800', fontSize: 13 }}>Reset & turn off</Text>
+      </Pressable>
+    </View>
+  </View>
+)}
     </View>
   );
 
@@ -504,7 +707,10 @@ useFocusEffect(
             item={item}
             joined={!!joinedMap[item.id]}
             joining={!!joiningMap[item.id]}
-            onJoin={() => (joinedMap[item.id] ? onUnjoin(item) : onJoin(item))}
+            onJoin={() => onJoin(item)}
+            onUnjoin={() => onUnjoin(item)}
+            getWallet={getDemoJoinWallet}
+            setWallet={setJoinWalletByDemo}
           />
         )}
         ListHeaderComponent={ChipsHeader}
@@ -519,7 +725,18 @@ useFocusEffect(
               : !hasMore
                 ? <View style={s.footerEnd}><Text style={s.endText}>You’re all caught up</Text></View>
                 : null}
-            <LiveEventsSection loading={serverLoading} events={serverEvents} onRefresh={reloadServerEvents} />
+            <LiveEventsSection
+              loading={serverLoading}
+              events={serverEvents}
+              onRefresh={reloadServerEvents}
+              joinedMap={joinedMap}
+              joiningMap={joiningMap}
+              getJoinWallet={getJoinWallet}
+              setJoinWalletByEvent={setJoinWalletByEvent}
+              onJoinLive={onJoinLive}
+              onUnjoinLive={onUnjoinLive}
+              hasEmail={hasEmail}
+            />
           </View>
         }
       />
@@ -539,8 +756,14 @@ function Chip({ label, active, onPress }: { label: string; active?: boolean; onP
   );
 }
 
-function EventCard({ item, joined, joining, onJoin }: {
-  item: EventItem; joined: boolean; joining: boolean; onJoin: () => void;
+function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWallet }: {
+  item: EventItem;
+  joined: boolean;
+  joining: boolean;
+  onJoin: () => void;
+  onUnjoin: () => void;
+  getWallet: (id: string) => 'skill'|'dollars';
+  setWallet: React.Dispatch<React.SetStateAction<Record<string,'skill'|'dollars'>>>;
 }) {
   return (
     <View style={s.card}>
@@ -573,10 +796,27 @@ function EventCard({ item, joined, joining, onJoin }: {
         <ParticipantBreakdown totalSpots={item.totalSpots} counts={item.participantCounts} />
       )}
 
+      {/* Wallet picker (UI only for demo) */}
+      <Text style={{ color:'#cfcfcf', marginTop:10, fontSize:12, fontWeight:'700' }}>Join with wallet</Text>
+      <View style={{ flexDirection:'row', gap:8, marginTop:10 }}>
+        <TouchableOpacity
+          onPress={() => setWallet(prev => ({ ...prev, [item.id]:'skill' }))}
+          style={{ paddingVertical:6, paddingHorizontal:10, borderRadius:6, borderWidth:1, borderColor: getWallet(item.id)==='skill' ? '#FFB84D' : '#333', backgroundColor: getWallet(item.id)==='skill' ? '#2a200f' : '#1a1a1a' }}
+        >
+          <Text style={{ color:'#fff', fontWeight:'800' }}>$Skill</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setWallet(prev => ({ ...prev, [item.id]:'dollars' }))}
+          style={{ paddingVertical:6, paddingHorizontal:10, borderRadius:6, borderWidth:1, borderColor: getWallet(item.id)==='dollars' ? '#7DFF70' : '#333', backgroundColor: getWallet(item.id)==='dollars' ? '#103014' : '#1a1a1a' }}
+        >
+          <Text style={{ color:'#fff', fontWeight:'800' }}>$Dollars</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={s.footerRow}>
         <Text style={s.spotsText}>{item.spotsLeft} spot{item.spotsLeft === 1 ? '' : 's'} left</Text>
         <Pressable
-          onPress={onJoin}
+          onPress={joined ? onUnjoin : onJoin}
           disabled={joining} // NOTE: only disable while joining (allow taps when already joined)
           style={({ pressed }) => [
             s.ctaBtn,
@@ -589,7 +829,7 @@ function EventCard({ item, joined, joining, onJoin }: {
           ) : joined ? (
             <>
               <Ionicons name="checkmark-circle" size={18} color={colors.WHITE} />
-              <Text style={s.ctaText}>Joined</Text>
+              <Text style={s.ctaText}>Joined • Unjoin</Text>
             </>
           ) : (
             <>
@@ -695,3 +935,18 @@ const s = StyleSheet.create({
   footerEnd: { paddingVertical: 14, alignItems: 'center' },
   endText: { color: colors.MUTED_TEXT, fontSize: 12 },
 });
+
+
+// Helpers for demo wallet simulation
+export async function getDemoWalletOffsets(email: string): Promise<{ skill: number; dollars: number }> {
+  try {
+    const raw = await AsyncStorage.getItem(`demoWalletOffsets:${(email||'').toLowerCase()}`);
+    if (!raw) return { skill: 0, dollars: 0 };
+    const o = JSON.parse(raw);
+    return { skill: Number(o?.skill||0), dollars: Number(o?.dollars||0) };
+  } catch { return { skill: 0, dollars: 0 }; }
+}
+
+export async function isDemoSimEnabled(): Promise<boolean> {
+  try { return (await AsyncStorage.getItem('demoSimEnabled')) === '1'; } catch { return false; }
+}

@@ -18,6 +18,7 @@ import {
   dollars as toDollars,
 } from '../services/api';
 import StripeSection from '../components/StripeSection';
+import { getDemoWalletOffsets, isDemoSimEnabled } from './EventsScreen';
 
 type HistItem = { ts: number; delta: number; note?: string | null; balanceAfter: number };
 
@@ -38,6 +39,8 @@ export default function EarningsScreen() {
   const [balanceCents, setBalanceCents] = useState<number | null>(null);
   const [skillCents, setSkillCents] = useState<number | null>(null);
   const [realCents, setRealCents] = useState<number | null>(null);
+  const [isDemo, setIsDemo] = useState(false);
+  useEffect(() => { (async () => setIsDemo(await isDemoSimEnabled()))(); }, []);
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -72,6 +75,13 @@ export default function EarningsScreen() {
       if (data?.success) {
         setSkillCents(Number(data.skill || 0));
         setRealCents(Number(data.dollars || 0));
+        try {
+          if (await isDemoSimEnabled()) {
+            const off = await getDemoWalletOffsets(email);
+            setSkillCents((prev) => Number(prev ?? 0) + Number(off.skill || 0));
+            setRealCents((prev) => Number(prev ?? 0) + Number(off.dollars || 0));
+          }
+        } catch {}
       } else {
         console.warn('[Earnings][Wallets] /wallets failed', data);
       }
@@ -112,7 +122,14 @@ export default function EarningsScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
       }
     >
-      <Text style={s.title}>Earnings</Text>
+      <View style={[s.row, { marginBottom: 10 }]}>
+        <Text style={s.title}>Earnings</Text>
+        {isDemo && (
+          <View style={{ marginLeft: 8, backgroundColor: '#1b1b1e', borderColor: '#444', borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+            <Text style={{ color: '#FFB84D', fontWeight: '800', fontSize: 10 }}>DEMO</Text>
+          </View>
+        )}
+      </View>
 
       {/* Balance */}
       <View style={s.card}>
