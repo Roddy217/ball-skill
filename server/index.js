@@ -5,15 +5,59 @@ import cors from 'cors';
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
 import attachSubmissions from './submissions.js';
-import attachJoins from './joins.js';
 import connectRouter from './stripeConnect.js';
 
 const app = express();
 app.post('/api/connect/webhook', ...connectWebhook);
 // Stripe Connect webhook MUST be before JSON parser (needs raw body)
-attachJoins(app);
 app.use(cors());
 app.use(express.json());
+
+// ---------------- Wallet v2 (authoritative) ----------------
+const walletV2 = new Map();  // emailKey -> { dollars: number, skill: number }
+const histV2 = new Map();    // emailKey -> Array<{ts, op, wallet, amount, note, after:{dollars,skill}}>
+
+function emailKey(s) { return String(s || '').trim().toLowerCase(); }
+function getOrInitWallet(email) {
+  const k = emailKey(email);
+  if (!walletV2.has(k)) walletV2.set(k, { dollars: 0, skill: 0 });
+  return walletV2.get(k);
+}
+function pushHist(email, entry) {
+  const k = emailKey(email);
+  if (!histV2.has(k)) histV2.set(k, []);
+  histV2.get(k).unshift({ ts: Date.now(), ...entry });
+}
+
+function addToWallet(email, wallet, amount, note) {
+  if (wallet !== 'skill' && wallet !== 'dollars') throw new Error('invalid_wallet');
+  const amt = Number(amount);
+  if (!Number.isInteger(amt) || amt <= 0) throw new Error('invalid_amount');
+  const w = getOrInitWallet(email);
+  w[wallet] = (w[wallet] || 0) + amt;
+  pushHist(email, { op: 'add', wallet, amount: amt, note: note || null, after: { dollars: w.dollars || 0, skill: w.skill || 0 } });
+  return { dollars: w.dollars || 0, skill: w.skill || 0 };
+}
+function deductFromWallet(email, wallet, amount, note) {
+  if (wallet !== 'skill' && wallet !== 'dollars') throw new Error('invalid_wallet');
+  const amt = Number(amount);
+  if (!Number.isInteger(amt) || amt <= 0) throw new Error('invalid_amount');
+  const w = getOrInitWallet(email);
+  const current = Number(w[wallet] || 0);
+  if (amt > current) {
+    const err = new Error('insufficient_funds');
+    err.meta = { wallet, required: amt, available: current };
+    throw err;
+  }
+  w[wallet] = current - amt;
+  pushHist(email, { op: 'deduct', wallet, amount: amt, note: note || null, after: { dollars: w.dollars || 0, skill: w.skill || 0 } });
+  return { dollars: w.dollars || 0, skill: w.skill || 0 };
+}
+function getWallets(email) {
+  const w = getOrInitWallet(email);
+  return { dollars: Number(w.dollars || 0), skill: Number(w.skill || 0) };
+}
+// -----------------------------------------------------------
 
 // ---- Joins (in-memory, dev) — canonical block ----
 // Persist across hot reloads using globalThis cache.
@@ -52,35 +96,83 @@ app.get('/api/user/:email/joins', (req, res) => {
 // --- Write joins ---
 // Join an event — maps both ways; credits handled on client.
 app.post('/api/events/:id/join', (req, res) => {
-  const id = req.params.id;
-  const email = (req.body && req.body.email) || req.query.email || '';
-  if (!id || !email) {
-    return res.status(400).json({ success: false, error: 'missing id/email' });
+  try {
+    const id = String(req.params.id || '').trim();
+    const email = String((req.body?.email || '')).trim().toLowerCase();
+    if (!email) return res.status(400).json({ success: false, error: 'missing_email' });
+
+    // locate event (support array or map)
+    const ev = events.find?.((e) => e.id === id) || (events[id] || null);
+    if (!ev) return res.status(404).json({ success: false, error: 'event_not_found' });
+    const feeCents = Number(ev.feeCents || 0);
+
+    // Deduct from DOLLARS wallet (authoritative)
+    let wallets;
+    try {
+      wallets = deductFromWallet(email, 'dollars', feeCents, `event:${id}:join`);
+    } catch (e) {
+      if (e && e.message === 'insufficient_funds') {
+        return res.status(400).json({ success: false, error: 'insufficient_funds', wallet: 'dollars', ...(e.meta || {}) });
+      }
+      console.error('[events.join] wallet error', e);
+      return res.status(500).json({ success: false, error: 'wallet_error' });
+    }
+
+    // register user (support array or dictionary)
+    if (Array.isArray(ev.registrants)) {
+      if (!ev.registrants.includes(email)) ev.registrants.push(email);
+    } else {
+      ev.registrants = ev.registrants || {};
+      ev.registrants[email] = true;
+    }
+    ev.registered = Array.isArray(ev.registrants)
+      ? ev.registrants.length
+      : Object.keys(ev.registrants || {}).length;
+
+    return res.json({ success: true, event: { id: ev.id, registered: ev.registered, feeCents }, wallets });
+  } catch (e) {
+    console.error('[events.join] fatal', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
   }
-  ensureEventSet(id).add(k(email));
-  ensureJoinSet(email).add(String(id));
-  console.log('[joins][ADD]', { id, email });
-  return res.json({ success: true });
 });
 
 // Unjoin (DELETE with JSON body or query ?email=)
 // and legacy aliases that some clients still call.
-function unjoinHandler(req, res) {
-  const id = req.params.id;
-  const email = (req.body && req.body.email) || req.query.email || '';
-  if (!id || !email) {
-    return res.status(400).json({ success: false, error: 'missing id/email' });
-  }
-  ensureEventSet(id).delete(k(email));
-  ensureJoinSet(email).delete(String(id));
-  console.log('[joins][DEL]', { id, email });
-  return res.json({ success: true });
-}
+app.post('/api/events/:id/unjoin', (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const email = String((req.body?.email || '')).trim().toLowerCase();
+    if (!email) return res.status(400).json({ success: false, error: 'missing_email' });
 
-app.delete('/api/events/:id/join', unjoinHandler);
-app.post('/api/events/:id/unjoin', unjoinHandler);
-app.post('/api/events/:id/leave', unjoinHandler);
-app.post('/api/events/:id/unregister', unjoinHandler);
+    const ev = events.find?.((e) => e.id === id) || (events[id] || null);
+    if (!ev) return res.status(404).json({ success: false, error: 'event_not_found' });
+    const feeCents = Number(ev.feeCents || 0);
+
+    // remove registration
+    if (Array.isArray(ev.registrants)) {
+      ev.registrants = ev.registrants.filter((u) => u !== email);
+    } else if (ev.registrants && typeof ev.registrants === 'object') {
+      delete ev.registrants[email];
+    }
+    ev.registered = Array.isArray(ev.registrants)
+      ? ev.registrants.length
+      : Object.keys(ev.registrants || {}).length;
+
+    // Refund to DOLLARS wallet
+    let wallets;
+    try {
+      wallets = addToWallet(email, 'dollars', feeCents, `event:${id}:refund`);
+    } catch (e) {
+      console.error('[events.unjoin] wallet error', e);
+      return res.status(500).json({ success: false, error: 'wallet_error' });
+    }
+
+    return res.json({ success: true, event: { id: ev.id, registered: ev.registered, feeCents }, wallets });
+  } catch (e) {
+    console.error('[events.unjoin] fatal', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
 
 const { PORT = 3001, STRIPE_SECRET_KEY = '' } = process.env;
 
@@ -108,13 +200,35 @@ function ensureEventSet(eventId) {
 function pushHistory(email, delta, note, balanceAfter, wallet) {
   const key = k(email);
   if (!creditsHistory.has(key)) creditsHistory.set(key, []);
+  // derive walletBalanceAfter from current wallet values
+  const w = getUserCredits(email);
+  const walletBalanceAfter = wallet === 'skill' ? Number(w.skill || 0) : Number(w.dollars || 0);
   creditsHistory.get(key).push({
     ts: Date.now(),
     delta: Number(delta),
     note: note || null,
     balanceAfter: Number(balanceAfter),
     ...(wallet ? { wallet } : {}),
+    walletBalanceAfter,
   });
+}
+
+// --- wallet routing helper (centralized) ---
+function chooseWalletByNote(note = '', delta = 0, overrideWallet = '') {
+  const ov = String(overrideWallet || '').toLowerCase();
+  if (ov === 'skill' || ov === 'dollars') return ov;
+
+  const n = String(note || '').toLowerCase().trim();
+
+  // Explicit directives always win
+  if (/(refund:skill|deduct:skill)\b/.test(n)) return 'skill';
+  if (/(refund:dollars|deduct:dollars)\b/.test(n)) return 'dollars';
+
+  // Promo-ish keywords go to SKILL regardless of delta sign
+  if (/(^|\b)(promo|bonus|demo|signup|referral|skill)(\b|$)/i.test(n)) return 'skill';
+
+  // Fallback: everything else → dollars
+  return 'dollars';
 }
 
 // ---------- Health / Dev ----------
@@ -235,7 +349,83 @@ app.post('/api/events/:id/joinDemo', (req, res) => {
 });
 
 // ---------- Credits ----------
+// --------------- Wallet v2 Endpoints ----------------
+app.get('/api/credits/:email/wallets', (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email || '');
+    const out = getWallets(email);
+    return res.json({ success: true, email: emailKey(email), skill: out.skill, dollars: out.dollars });
+  } catch (e) {
+    console.error('[wallets.get]', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
+
+app.post('/api/credits/:email/skill/add', (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email || '');
+    const { amount, note } = req.body || {};
+    const out = addToWallet(email, 'skill', amount, note);
+    return res.json({ success: true, email: emailKey(email), skill: out.skill, dollars: out.dollars });
+  } catch (e) {
+    if (e.message === 'invalid_amount') return res.status(400).json({ success: false, error: 'invalid_amount' });
+    if (e.message === 'invalid_wallet') return res.status(400).json({ success: false, error: 'invalid_wallet' });
+    console.error('[skill.add]', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
+
+app.post('/api/credits/:email/skill/deduct', (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email || '');
+    const { amount, note } = req.body || {};
+    const out = deductFromWallet(email, 'skill', amount, note);
+    return res.json({ success: true, email: emailKey(email), skill: out.skill, dollars: out.dollars });
+  } catch (e) {
+    if (e.message === 'invalid_amount') return res.status(400).json({ success: false, error: 'invalid_amount' });
+    if (e.message === 'invalid_wallet') return res.status(400).json({ success: false, error: 'invalid_wallet' });
+    if (e.message === 'insufficient_funds') {
+      return res.status(400).json({ success: false, error: 'insufficient_funds', ...(e.meta || {}) });
+    }
+    console.error('[skill.deduct]', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
+
+app.post('/api/credits/:email/dollars/add', (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email || '');
+    const { amount, note } = req.body || {};
+    const out = addToWallet(email, 'dollars', amount, note);
+    return res.json({ success: true, email: emailKey(email), skill: out.skill, dollars: out.dollars });
+  } catch (e) {
+    if (e.message === 'invalid_amount') return res.status(400).json({ success: false, error: 'invalid_amount' });
+    if (e.message === 'invalid_wallet') return res.status(400).json({ success: false, error: 'invalid_wallet' });
+    console.error('[dollars.add]', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
+
+app.post('/api/credits/:email/dollars/deduct', (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email || '');
+    const { amount, note } = req.body || {};
+    const out = deductFromWallet(email, 'dollars', amount, note);
+    return res.json({ success: true, email: emailKey(email), skill: out.skill, dollars: out.dollars });
+  } catch (e) {
+    if (e.message === 'invalid_amount') return res.status(400).json({ success: false, error: 'invalid_amount' });
+    if (e.message === 'invalid_wallet') return res.status(400).json({ success: false, error: 'invalid_wallet' });
+    if (e.message === 'insufficient_funds') {
+      return res.status(400).json({ success: false, error: 'insufficient_funds', ...(e.meta || {}) });
+    }
+    console.error('[dollars.deduct]', e);
+    return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
+// ----------------------------------------------------
+
 app.get('/api/credits/:email', (req, res) => {
+  console.warn('[DEPRECATED] legacy credits route in use — migrate to /api/credits/:email/{skill|dollars}/{add|deduct} and /wallets');
   const email = k(decodeURIComponent(req.params.email || ''));
   const wallet = getUserCredits(email);
   return res.json({ success: true, balance: (wallet.dollars || 0) + (wallet.skill || 0) });
@@ -243,6 +433,7 @@ app.get('/api/credits/:email', (req, res) => {
 
 // Wallet breakdown (dollars, skill, combined)
 app.get('/api/credits/:email/detail', (req, res) => {
+  console.warn('[DEPRECATED] legacy credits route in use — migrate to /api/credits/:email/{skill|dollars}/{add|deduct} and /wallets');
   const email = k(decodeURIComponent(req.params.email || ''));
   const w = getUserCredits(email);
   const dollars = Number(w.dollars || 0);
@@ -252,6 +443,7 @@ app.get('/api/credits/:email/detail', (req, res) => {
 
 // New: apply any delta with a note; logs history
 app.post('/api/credits/apply', (req, res) => {
+  console.warn('[DEPRECATED] legacy credits route in use — migrate to /api/credits/:email/{skill|dollars}/{add|deduct} and /wallets');
   const email = k(req.body?.email);
   const delta = Number(req.body?.delta);
   const note = req.body?.note;
@@ -261,24 +453,18 @@ app.post('/api/credits/apply', (req, res) => {
   }
   const w = getUserCredits(email);
 
-  const isSkillCreditTag = (t) => /(^|\s)(promo|bonus|demo|skill\s*wallet|signup|referral)(\s|$)/i.test(String(t || ''));
-  const isSkillDebitTag  = (t) => /refund:skill|deduct:skill/i.test(String(t || ''));
-
-  let walletKey; // 'skill' | 'dollars'
-  if (overrideWallet === 'skill' || overrideWallet === 'dollars') {
-    walletKey = overrideWallet;
-  } else if (delta >= 0) {
-    walletKey = isSkillCreditTag(note) ? 'skill' : 'dollars';
-  } else {
-    walletKey = isSkillDebitTag(note) ? 'skill' : 'dollars';
-  }
+  const walletKey = chooseWalletByNote(note, delta, overrideWallet);
   console.log('[credits.apply]', { email, delta, note, overrideWallet, walletKey });
 
   const amt = Math.abs(delta);
   if (delta >= 0) {
     w[walletKey] = (w[walletKey] || 0) + amt;
   } else {
-    w[walletKey] = Math.max(0, (w[walletKey] || 0) - amt);
+    const current = Number(w[walletKey] || 0);
+    if (amt > current) {
+      return res.status(400).json({ success: false, error: 'insufficient_funds_in_wallet', wallet: walletKey, required: amt, available: current });
+    }
+    w[walletKey] = current - amt;
   }
 
   const combined = (w.dollars || 0) + (w.skill || 0);
@@ -288,19 +474,35 @@ app.post('/api/credits/apply', (req, res) => {
 
 // Keep: legacy grant; also logs history with a default note
 app.post('/api/credits/grant', (req, res) => {
-  const { email, delta } = req.body || {};
-  if (!email || !Number.isFinite(delta)) {
+  console.warn('[DEPRECATED] legacy credits route in use — migrate to /api/credits/:email/{skill|dollars}/{add|deduct} and /wallets');
+  const { email, delta, note } = req.body || {};
+  if (!email || !Number.isFinite(Number(delta))) {
     return res.status(400).json({ success: false, error: 'email and numeric delta required' });
   }
   const w = getUserCredits(email);
-  w.dollars = (w.dollars || 0) + Number(delta);
+  const amt = Number(delta);
+  const walletKey = chooseWalletByNote(note, amt, (req.body?.wallet || '').toString().toLowerCase());
+
+  if (amt >= 0) {
+    w[walletKey] = (w[walletKey] || 0) + amt;
+  } else {
+    const need = Math.abs(amt);
+    const current = Number(w[walletKey] || 0);
+    if (need > current) {
+      return res.status(400).json({ success: false, error: 'insufficient_funds_in_wallet', wallet: walletKey, required: need, available: current });
+    }
+    w[walletKey] = current - need;
+  }
+
   const combined = (w.dollars || 0) + (w.skill || 0);
-  pushHistory(email, Number(delta), 'grant', combined, 'dollars');
-  return res.json({ success: true, balance: combined });
+  pushHistory(email, amt, note || 'grant', combined, walletKey);
+  console.log('[credits.grant]', { email, delta: amt, note, wallet: walletKey, after: { dollars: w.dollars || 0, skill: w.skill || 0 } });
+  return res.json({ success: true, balance: combined, wallet: walletKey, walletBalances: { dollars: w.dollars || 0, skill: w.skill || 0 } });
 });
 
 // History feed (newest first). Optional query: limit, q (substring match on note)
 app.get('/api/credits/:email/history', (req, res) => {
+  console.warn('[DEPRECATED] legacy credits route in use — migrate to /api/credits/:email/{skill|dollars}/{add|deduct} and /wallets');
   const email = k(decodeURIComponent(req.params.email || ''));
   const q = (req.query?.q || '').toString().toLowerCase();
   const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 100)));

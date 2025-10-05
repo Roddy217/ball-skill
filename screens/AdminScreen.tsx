@@ -10,8 +10,6 @@ import AutoEventId from '../components/AutoEventId';
 import { useAuth } from '../providers/AuthProvider';
 import * as bank from '../services/balanceService';
 import { addEmail } from '../services/emailStore';
-import CreditsHelpCard from '../components/CreditsHelpCard';
-import { Ionicons } from '@expo/vector-icons';
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', GREEN = '#16a34a', RED = '#ef4444';
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/,'');
@@ -100,6 +98,7 @@ async function fetchEventsListLite(): Promise<Array<{ id: string; name?: string 
   const data = await getJSON<{ success: boolean; events: Array<{ id: string; name?: string }> }>(`/events`);
   return data?.events || [];
 }
+
 async function upsertParticipants(
   eventId: string,
   payload: { teen?: number; adult?: number; pro?: number; celebrity?: number; totalSpots?: number; }
@@ -107,22 +106,28 @@ async function upsertParticipants(
   return postJSON(`/events/${encodeURIComponent(eventId)}/participants`, payload);
 }
 
+// ---- Direct Wallet Ops helper ----
+async function applyDirectToWallet(payload: { email: string; wallet: 'skill' | 'dollars'; delta: number; note?: string }) {
+  const email = String(payload.email || '').trim().toLowerCase();
+  const encEmail = encodeURIComponent(email);
+  const wallet = payload.wallet === 'skill' ? 'skill' : 'dollars';
+  const op = payload.delta >= 0 ? 'add' : 'deduct';
+  const amount = Math.abs(Number(payload.delta || 0));
+  const note = payload.note || `${op} via admin`;
+
+  const res = await fetch(`${API}/credits/${encEmail}/${wallet}/${op}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount, note }),
+  });
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok || !data?.success) throw new Error(data?.error || 'wallet_v2 request failed');
+  return data as { success: true; email: string; skill: number; dollars: number };
+}
+
 const DEFAULT_DRILLS = ['FT','3PT'];
 
 export default function AdminScreen() {
-  // Lightweight collapsible section used to organize tag chips
-  const Section: React.FC<{ title: string; color?: string; open: boolean; onToggle: () => void }> = ({ title, color = '#9a9a9a', open, onToggle, children }) => (
-    <View style={{ marginTop: 8 }}>
-      <Pressable onPress={onToggle} hitSlop={8} style={({ pressed }) => [
-        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 },
-        pressed && { opacity: 0.9 }
-      ]}>
-        <Text style={{ color: '#fff', fontWeight: '800' }}>{title}</Text>
-        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={color} />
-      </Pressable>
-      {open ? <View style={{ marginTop: 6 }}>{children}</View> : null}
-    </View>
-  );
   const { user } = useAuth();
   // --- Admin balance quick chip ---
 const [adminBalCents, setAdminBalCents] = useState<number | null>(null);
@@ -237,6 +242,15 @@ const refreshMyBalance = useCallback(async () => {
   // Seed
   const [seedBusy, setSeedBusy] = useState(false);
 
+  // --- Direct Wallet Ops ---
+  const [dwEnabled, setDwEnabled] = useState(false);
+  const [dwEmail, setDwEmail] = useState('');
+  const [dwAmount, setDwAmount] = useState(''); // dollars as string, e.g. "100.00"
+  const [dwWallet, setDwWallet] = useState<'skill' | 'dollars'>('skill');
+  const [dwMode, setDwMode] = useState<'add' | 'deduct'>('add');
+  const [dwNote, setDwNote] = useState('');
+  const [dwBusy, setDwBusy] = useState(false);
+
   const doSeed = useCallback(async () => {
     setSeedBusy(true);
     try {
@@ -260,37 +274,45 @@ const refreshMyBalance = useCallback(async () => {
     }
   }, [reloadEvents]);
 
+  const submitDirectWallet = useCallback(async () => {
+    const email = (dwEmail || '').trim().toLowerCase();
+    if (!email) { Alert.alert('Email required', 'Enter the target user email.'); return; }
+
+    const amt = Number((dwAmount || '').replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(amt) || amt <= 0) { Alert.alert('Amount required', 'Enter a positive dollar amount.'); return; }
+
+    const cents = Math.round(amt * 100);
+    const delta = dwMode === 'add' ? cents : -cents;
+    try {
+      setDwBusy(true);
+      const res = await applyDirectToWallet({ email, wallet: dwWallet, delta, note: dwNote || `${dwMode} via admin` });
+      if (!res?.success) {
+        Alert.alert('Direct Wallet', `Failed${(res as any)?.error ? `: ${(res as any).error}` : ''}`);
+      } else {
+        const latest = res as { success: true; email: string; skill: number; dollars: number };
+        Alert.alert(
+          'Direct Wallet',
+          `${dwMode === 'add' ? 'Added' : 'Deducted'} $${amt.toFixed(2)} ${dwMode === 'add' ? 'to' : 'from'} ${dwWallet}.\n\nNow — Skill: $${(latest.skill/100).toFixed(2)} · Dollars: $${(latest.dollars/100).toFixed(2)}`
+        );
+      }
+      // refresh quick balance if we just adjusted the email visible in this panel
+      if (gEmail.trim().toLowerCase() === email) {
+        const bal = await getBalance(email);
+        setGBal(bal);
+      }
+    } catch (e: any) {
+      const msg = e?.message || 'Request error';
+      Alert.alert('Direct Wallet', msg);
+    } finally {
+      setDwBusy(false);
+    }
+  }, [dwEmail, dwAmount, dwWallet, dwMode, dwNote, gEmail]);
+
   // Grant/Deduct
   const [gEmail, setGEmail] = useState('test@ballskill.com');
   const [gDelta, setGDelta] = useState('2500'); // cents
   const [gNote, setGNote] = useState('');       // note
-  // Collapsible groups for tag chips
-  const [showSkillTags, setShowSkillTags] = useState(false);
-  const [showDollarTags, setShowDollarTags] = useState(false);
-  const [showDeductTags, setShowDeductTags] = useState(false);
-  const appendNote = (tag: string) => {
-    setGNote(prev => {
-      const cur = (prev || '').trim();
-      const t = tag.trim();
-      if (!cur) return t;
-      // avoid duplicate tags if the note already ends with it
-      if (new RegExp(`(^|\\s)${t}(\\s|$)`, 'i').test(cur)) return cur;
-      return `${cur} ${t}`;
-    });
-  };
-
-  // Append a tag to the note if not present
-function addTag(note: string, tag: string) {
-  const n = String(note || '');
-  const has = new RegExp(`(^|\\s)${tag}(\\s|$)`, 'i').test(n);
-  return has ? n : (n ? `${n} ${tag}` : tag);
-}
-
-// Force the delta string to be negative
-function forceNegativeDelta(value: string | number) {
-  const n = Math.abs(Number(value) || 0);
-  return `-${n}`;
-}
+  const [gWallet, setGWallet] = useState<'skill'|'dollars'>('dollars');
 
   const [gBusy, setGBusy] = useState(false);
   const [gBal, setGBal] = useState<number | null>(null);
@@ -349,12 +371,14 @@ function forceNegativeDelta(value: string | number) {
 
   const doGrant = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
+    const amountCents = Math.abs(Number(gDelta) || 0);
+    if (amountCents <= 0) { Alert.alert('Amount required', 'Enter a positive amount in cents.'); return; }
     setGBusy(true);
     try {
       console.log('[Admin][doGrant] START', { email: gEmail, delta: gDelta, note: gNote });
 
       // 1) apply credits (cents)
-      await applyCredits(gEmail, Math.abs(Number(gDelta) || 0), gNote);
+      await applyDirectToWallet({ email: gEmail, wallet: gWallet, delta: amountCents,  note: gNote });
       console.log('[Admin][doGrant] applyCredits OK');
 
       // 2) remember email for autocomplete
@@ -378,12 +402,13 @@ function forceNegativeDelta(value: string | number) {
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
 
-      // 7) clear the optional note
+      // auto-clear inputs after success
+      setGDelta('');
       setGNote('');
 
       Alert.alert(
         'Credits',
-        `Granted ${fmtDelta(Math.abs(Number(gDelta)||0))} to ${gEmail.trim().toLowerCase()}`
+        `Granted ${fmtDelta(amountCents)} to ${gEmail.trim().toLowerCase()}`
       );
     } catch (e: any) {
       console.log('[Admin][doGrant] ERROR', e);
@@ -392,16 +417,18 @@ function forceNegativeDelta(value: string | number) {
       setGBusy(false);
       console.log('[Admin][doGrant] END');
     }
-  }, [gEmail, gDelta, gNote, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
+  }, [gEmail, gDelta, gNote, gWallet, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
 
   const doDeduct = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
+    const amountCents = Math.abs(Number(gDelta) || 0);
+    if (amountCents <= 0) { Alert.alert('Amount required', 'Enter a positive amount in cents.'); return; }
     setGBusy(true);
     try {
       console.log('[Admin][doDeduct] START', { email: gEmail, delta: gDelta, note: gNote });
   
       // 1) apply negative credits (cents)
-      await applyCredits(gEmail, -Math.abs(Number(gDelta) || 0), gNote);
+      await applyDirectToWallet({ email: gEmail, wallet: gWallet, delta: -amountCents, note: gNote });
       console.log('[Admin][doDeduct] applyCredits OK');
   
       // 2) remember email for autocomplete
@@ -425,12 +452,13 @@ function forceNegativeDelta(value: string | number) {
       const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
       await loadHistory(gEmail, hQ, limitNum);
   
-      // 7) clear the optional note
+      // auto-clear inputs after success
+      setGDelta('');
       setGNote('');
-  
+
       Alert.alert(
         'Credits',
-        `Deducted ${fmtDelta(-Math.abs(Number(gDelta)||0))} from ${gEmail.trim().toLowerCase()}`
+        `Deducted ${fmtDelta(-amountCents)} from ${gEmail.trim().toLowerCase()}`
       );
     } catch (e: any) {
       console.log('[Admin][doDeduct] ERROR', e);
@@ -439,7 +467,7 @@ function forceNegativeDelta(value: string | number) {
       setGBusy(false);
       console.log('[Admin][doDeduct] END');
     }
-  }, [gEmail, gDelta, gNote, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
+  }, [gEmail, gDelta, gNote, gWallet, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
 
   const refreshGBal = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
@@ -583,6 +611,63 @@ function forceNegativeDelta(value: string | number) {
         keyboardDismissMode="interactive"
         scrollIndicatorInsets={{ bottom: 80 }}
       >
+        {/* -------- Direct Wallet Ops (explicit add/deduct to a chosen wallet) -------- */}
+        <View style={{ marginTop: 24, padding: 12, borderRadius: 8, backgroundColor: '#111', borderColor: '#333', borderWidth: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>Direct Wallet Ops</Text>
+            <Switch value={dwEnabled} onValueChange={setDwEnabled} />
+          </View>
+
+          {dwEnabled && (
+            <View style={{ marginTop: 12, gap: 10 }}>
+              <Text style={{ color: '#ccc' }}>User Email</Text>
+              <AutoEmail value={dwEmail} onChangeText={setDwEmail} placeholder="user email" style={s.input} />
+
+              <Text style={{ color: '#ccc' }}>Amount ($)</Text>
+              <TextInput
+                placeholder="100.00"
+                placeholderTextColor="#777"
+                value={dwAmount}
+                onChangeText={setDwAmount}
+                keyboardType="decimal-pad"
+                style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
+              />
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity onPress={() => setDwWallet('skill')} style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: dwWallet === 'skill' ? '#FFB84D' : '#333', backgroundColor: dwWallet === 'skill' ? '#2a200f' : '#1a1a1a' }}>
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>Skill Wallet</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setDwWallet('dollars')} style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: dwWallet === 'dollars' ? '#7DFF70' : '#333', backgroundColor: dwWallet === 'dollars' ? '#103014' : '#1a1a1a' }}>
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>Dollars Wallet</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity onPress={() => setDwMode('add')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: dwMode === 'add' ? '#FF6600' : '#333', backgroundColor: dwMode === 'add' ? '#2a170a' : '#1a1a1a' }}>
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>Add</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setDwMode('deduct')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: dwMode === 'deduct' ? '#FF6600' : '#333', backgroundColor: dwMode === 'deduct' ? '#2a170a' : '#1a1a1a' }}>
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>Deduct</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ color: '#ccc' }}>Note (optional)</Text>
+              <TextInput
+                placeholder={dwMode === 'add' ? 'e.g., admin grant' : 'e.g., adjustment'}
+                placeholderTextColor="#777"
+                value={dwNote}
+                onChangeText={setDwNote}
+                style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
+              />
+
+              <TouchableOpacity onPress={submitDirectWallet} disabled={dwBusy} style={{ marginTop: 8, backgroundColor: '#FF6600', paddingVertical: 12, borderRadius: 6, alignItems: 'center' }}>
+                <Text style={{ color: '#000', fontWeight: '800' }}>{dwBusy ? 'Working…' : (dwMode === 'add' ? 'Add to Wallet' : 'Deduct from Wallet')}</Text>
+              </TouchableOpacity>
+
+              <Text style={{ color: '#888', fontSize: 12, marginTop: 6 }}>Uses explicit wallet v2 routes (no tags). Toggle off to hide. Remove later by searching for “Direct Wallet Ops”.</Text>
+            </View>
+          )}
+        </View>
         <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
         <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
 
@@ -619,9 +704,9 @@ function forceNegativeDelta(value: string | number) {
         </View>
 
         {/* Grant / Deduct */}
+        
         <View style={s.card}>
           <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
-          <CreditsHelpCard />
           
           {/* Email */}
           <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
@@ -676,6 +761,22 @@ function forceNegativeDelta(value: string | number) {
             ))}
           </View>
 
+          {/* Wallet selector for Grant/Deduct */}
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+            <TouchableOpacity
+              onPress={() => setGWallet('skill')}
+              style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: gWallet === 'skill' ? '#FFB84D' : '#333', backgroundColor: gWallet === 'skill' ? '#2a200f' : '#1a1a1a' }}
+            >
+              <Text style={{ color: '#fff', fontWeight: '800' }}>Skill wallet</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setGWallet('dollars')}
+              style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: gWallet === 'dollars' ? '#7DFF70' : '#333', backgroundColor: gWallet === 'dollars' ? '#103014' : '#1a1a1a' }}
+            >
+              <Text style={{ color: '#fff', fontWeight: '800' }}>Dollars wallet</Text>
+            </TouchableOpacity>
+          </View>
+
           {/* Note */}
           <View style={s.noteHeaderRow}>
             <Text style={[s.meta, { marginTop: 10, marginBottom: 0 }]}>Note (optional)</Text>
@@ -696,130 +797,6 @@ function forceNegativeDelta(value: string | number) {
             value={gNote}
             onChangeText={setGNote}
           />
-          {/* Tag organizer (collapsible groups) */}
-          <Section
-            title="Credit tags — Skill wallet (orange)"
-            color={ORANGE}
-            open={showSkillTags}
-            onToggle={() => setShowSkillTags(v => !v)}
-          >
-            <View style={[s.chipRow, { marginTop: 2 }]}>
-              {['promo','bonus','demo','signup','referral'].map(tag => (
-                <TouchableOpacity key={tag} style={s.chip} onPress={() => appendNote(tag)}>
-                  <Text style={[s.chipText, { color: ORANGE }]}>[{tag}]</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </Section>
-
-          <Section
-            title="Credit tags — Dollars wallet (green)"
-            color={GREEN}
-            open={showDollarTags}
-            onToggle={() => setShowDollarTags(v => !v)}
-          >
-            <View style={[s.chipRow, { marginTop: 2 }]}>
-              {['prize','payout','purchase','won'].map(tag => (
-                <TouchableOpacity key={tag} style={s.chip} onPress={() => appendNote(tag)}>
-                  <Text style={[s.chipText, { color: GREEN }]}>[{tag}]</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </Section>
-
-          <Section
-            title="Deduction / Refund tags (red)"
-            color={RED}
-            open={showDeductTags}
-            onToggle={() => setShowDeductTags(v => !v)}
-          >
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
-              {/* Refund from Skill wallet (promo-type tag routes it to Skill) */}
-              <Pressable
-                onPress={() => {
-                  setGNote(n => addTag(n, 'refund:skill'));
-                  setGDelta(d => forceNegativeDelta(d as any));
-                }}
-                style={({ pressed }) => [
-                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-                  pressed && { opacity: 0.9 }
-                ]}
-              >
-                <Text style={{ color: RED, fontWeight: '800' }}>[refund:skill]</Text>
-              </Pressable>
-
-              {/* Refund from Dollars wallet */}
-              <Pressable
-                onPress={() => {
-                  setGNote(n => addTag(n, 'refund:dollars'));
-                  setGDelta(d => forceNegativeDelta(d as any));
-                }}
-                style={({ pressed }) => [
-                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-                  pressed && { opacity: 0.9 }
-                ]}
-              >
-                <Text style={{ color: RED, fontWeight: '800' }}>[refund:dollars]</Text>
-              </Pressable>
-
-              {/* Manual deduct from Skill (use promo tag family to route to Skill) */}
-              <Pressable
-                onPress={() => {
-                  setGNote(n => addTag(addTag(n, 'deduct:skill'), 'promo'));
-                  setGDelta(d => forceNegativeDelta(d as any));
-                }}
-                style={({ pressed }) => [
-                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-                  pressed && { opacity: 0.9 }
-                ]}
-              >
-                <Text style={{ color: RED, fontWeight: '800' }}>[deduct:skill]</Text>
-              </Pressable>
-
-              {/* Manual deduct from Dollars */}
-              <Pressable
-                onPress={() => {
-                  setGNote(n => addTag(n, 'deduct:dollars'));
-                  setGDelta(d => forceNegativeDelta(d as any));
-                }}
-                style={({ pressed }) => [
-                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-                  pressed && { opacity: 0.9 }
-                ]}
-              >
-                <Text style={{ color: RED, fontWeight: '800' }}>[deduct:dollars]</Text>
-              </Pressable>
-
-              {/* Penalty (Dollars) */}
-              <Pressable
-                onPress={() => {
-                  setGNote(n => addTag(n, 'penalty'));
-                  setGDelta(d => forceNegativeDelta(d as any));
-                }}
-                style={({ pressed }) => [
-                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-                  pressed && { opacity: 0.9 }
-                ]}
-              >
-                <Text style={{ color: RED, fontWeight: '800' }}>[penalty]</Text>
-              </Pressable>
-
-              {/* Adjustment (Dollars) */}
-              <Pressable
-                onPress={() => {
-                  setGNote(n => addTag(n, 'adjustment'));
-                  setGDelta(d => forceNegativeDelta(d as any));
-                }}
-                style={({ pressed }) => [
-                  { backgroundColor: '#3a1414', borderColor: '#7f1d1d', borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-                  pressed && { opacity: 0.9 }
-                ]}
-              >
-                <Text style={{ color: RED, fontWeight: '800' }}>[adjustment]</Text>
-              </Pressable>
-            </View>
-          </Section>
-
           {/* Actions */}
           <View style={{ flexDirection:'row', gap:10 }}>
             <TouchableOpacity disabled={gBusy} style={[s.btn, { flex:1 }, gBusy && s.btnDisabled]} onPress={doGrant}>

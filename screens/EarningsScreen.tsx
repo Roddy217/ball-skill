@@ -25,6 +25,8 @@ const ORANGE = '#FF6600';
 const GREEN = '#16a34a';
 const RED = '#ef4444';
 
+const API = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/, '') + '/api';
+
 export default function EarningsScreen() {
   const { user } = useAuth();
   const email = (user?.email || '').toLowerCase();
@@ -47,9 +49,6 @@ export default function EarningsScreen() {
   const colorize = (n?: number | null, color: string) =>
     n == null ? '—' : <Text style={{ color, fontWeight: '900' }}>{toDollars(n)}</Text>;
 
-  const isSkillTag = (note?: string | null) =>
-    /(^|\s)(promo|bonus|demo|skill wallet|signup|referral)(\s|$)/i.test(String(note || ''));
-
   const loadBalance = useCallback(async () => {
     if (!hasEmail) return;
     setBalLoading(true);
@@ -68,35 +67,25 @@ export default function EarningsScreen() {
     if (!hasEmail) return;
     setHistLoading(true);
     try {
-      const list: HistItem[] = await getCreditsHistory(email, { limit: 500 });
-      let skill = 0;
-      for (const h of list) {
-        if (h.delta > 0 && isSkillTag(h.note)) {
-          skill += h.delta;
-        }
+      const resp = await fetch(`${API}/credits/${encodeURIComponent(email)}/wallets`);
+      const data = await resp.json();
+      if (data?.success) {
+        setSkillCents(Number(data.skill || 0));
+        setRealCents(Number(data.dollars || 0));
+      } else {
+        console.warn('[Earnings][Wallets] /wallets failed', data);
       }
-      // Align with current total balance; whatever isn't tagged as Skill is Dollars
-      const total = Number(balanceCents || 0);
-      if (skill > total) skill = total;
-      const real = total - skill;
-      setSkillCents(skill);
-      setRealCents(real);
     } catch (e) {
       console.log('[Earnings][Wallets] error', e);
-      // fall back: all dollars, nothing skill
-      const total = Number(balanceCents || 0);
-      setSkillCents(0);
-      setRealCents(total);
     } finally {
       setHistLoading(false);
     }
-  }, [email, hasEmail, balanceCents]);
+  }, [email, hasEmail]);
 
   const loadWallets = useCallback(async () => {
-    // Ensure we have a balance first (needed to split dollars = total - skill)
-    if (balanceCents == null) return;
+    if (!hasEmail) return;
     await recomputeWallets();
-  }, [recomputeWallets, balanceCents]);
+  }, [recomputeWallets, hasEmail]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -150,7 +139,7 @@ export default function EarningsScreen() {
         <View style={[s.row, { marginBottom: 8 }]}>
           <Text style={s.cardTitle}>Wallets</Text>
           <Pressable
-            onPress={recomputeWallets}
+            onPress={loadWallets}
             disabled={histLoading}
             style={({ pressed }) => [
               s.chip,
@@ -158,7 +147,7 @@ export default function EarningsScreen() {
               pressed && { opacity: 0.9 },
             ]}
           >
-            <Text style={s.chipText}>{histLoading ? 'Recomputing…' : '⚡ Recompute'}</Text>
+            <Text style={s.chipText}>{histLoading ? 'Refreshing…' : 'Refresh wallets'}</Text>
           </Pressable>
         </View>
 
@@ -174,11 +163,7 @@ export default function EarningsScreen() {
         </View>
 
         <Text style={s.subtle}>
-          Positive credits tagged with <Text style={{ color: ORANGE, fontWeight: '900' }}>promo</Text>,{' '}
-          <Text style={{ color: ORANGE, fontWeight: '900' }}>bonus</Text>,{' '}
-          <Text style={{ color: ORANGE, fontWeight: '900' }}>demo</Text>,{' '}
-          <Text style={{ color: ORANGE, fontWeight: '900' }}>signup</Text>,{' '}
-          <Text style={{ color: ORANGE, fontWeight: '900' }}>referral</Text> go to $Skill. Everything else is $Dollars.
+          Wallet totals are authoritative from the server. $Dollars are real money eligible for payout; $Skill are promotional credits.
         </Text>
       </View>
 
