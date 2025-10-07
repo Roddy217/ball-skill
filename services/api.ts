@@ -71,14 +71,28 @@ async function http<T = any>(
 /* ---------------- Credits ---------------- */
 
 export async function getBalance(email: string): Promise<number> {
-  const enc = encodeURIComponent((email || '').toLowerCase());
-  const { ok, json } = await http<{ success: boolean; balance: number }>('GET', `/credits/${enc}`);
-  if (!ok || !json?.success) throw new Error('balance failed');
-  return Number(json.balance || 0);
+  const enc = encodeURIComponent(email.trim().toLowerCase());
+  const base = getApiBase();
+  const res = await fetch(`${base}/credits/${enc}/wallets`);
+  const data = await res.json();
+  if (!res.ok) throw new Error('balance failed');
+  const dollars = Number(data?.dollars || 0);
+  const skill = Number(data?.skill || 0);
+  return dollars + skill;
+}
+
+export async function getWallets(email: string): Promise<{ dollars: number; skill: number }> {
+  const enc = encodeURIComponent(email.trim().toLowerCase());
+  const base = getApiBase();
+  const res = await fetch(`${base}/credits/${enc}/wallets`);
+  const data = await res.json();
+  if (!res.ok || !data?.success) throw new Error('wallets failed');
+  return { dollars: Number(data.dollars || 0), skill: Number(data.skill || 0) };
 }
 
 /** Admin/user credits mutation (cents). Used for grants, deductions, refunds. */
 export async function grantCredits(email: string, deltaCents: number, note?: string) {
+  throw new Error('Deprecated: use wallet v2 endpoints via AdminScreen or Events join/unjoin');
   const payload = { email: (email || '').toLowerCase(), delta: Number(deltaCents||0), note: note || '' };
   const { ok, json } = await http<{ success: boolean; balance: number }>('POST', `/credits/grant`, payload);
   if (!ok || !json?.success) throw new Error('grant failed');
@@ -87,23 +101,21 @@ export async function grantCredits(email: string, deltaCents: number, note?: str
 
 /** Alias kept for older callers */
 export async function applyCredits(email: string, deltaCents: number, note?: string) {
+  throw new Error('Deprecated: use wallet v2 endpoints via AdminScreen or Events join/unjoin');
   return grantCredits(email, deltaCents, note);
 }
 
 // History: newest-first list of credit changes (in cents)
-export async function getCreditsHistory(
-  email: string,
-  opts?: { limit?: number }
-): Promise<Array<{ ts: number; delta: number; note?: string; balanceAfter: number }>> {
-  const limit = Math.max(1, Math.min(500, opts?.limit ?? 100));
-  const enc = encodeURIComponent((email || '').toLowerCase());
-
-  const { ok, json } = await http<{ success: boolean; history?: any[] }>(
-    'GET',
-    `/credits/${enc}/history?limit=${limit}`
-  );
-  if (!ok || !json?.success) throw new Error('history failed');
-  return Array.isArray(json.history) ? (json.history as any[]) : [];
+export async function getCreditsHistory(email: string, opts?: { limit?: number; q?: string }) {
+  const enc = encodeURIComponent(email.trim().toLowerCase());
+  const limit = Math.max(1, Math.min(200, Number(opts?.limit ?? 100)));
+  const qs = new URLSearchParams({ limit: String(limit), sort: 'desc' });
+  if (opts?.q) qs.set('q', opts.q);
+  const url = `${API_BASE}/transactions/${enc}?${qs.toString()}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error('history failed');
+  return Array.isArray(data?.items) ? data.items : [];
 }
 
 /* ---------------- Joins ---------------- */
@@ -129,17 +141,17 @@ export async function getUserJoins(email: string): Promise<any> {
 }
 
 /** Join an event */
-export async function recordJoin(eventId: string, email: string) {
+export async function recordJoin(eventId: string, email: string, wallet: 'skill'|'dollars' = 'dollars') {
   const eid = encodeURIComponent(eventId);
-  const payload = { email: (email || '').toLowerCase() };
+  const payload = { email: (email || '').toLowerCase().trim(), wallet };
 
   // primary, matches your server
   let r = await http('POST', `/events/${eid}/join`, payload);
-  if (r.ok && (r.json as any)?.success !== false) return r.json;
+  if (r.ok && (r.json as any)?.success !== false) return r.json as any;
 
   // legacy fallbacks
   r = await http('POST', `/events/${eid}/register`, payload);
-  if (r.ok && (r.json as any)?.success !== false) return r.json;
+  if (r.ok && (r.json as any)?.success !== false) return r.json as any;
 
   throw new Error('join failed (no compatible route)');
 }

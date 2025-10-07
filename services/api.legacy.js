@@ -59,42 +59,33 @@ class ApiService {
   }
   // Demo helper (legacy)
   joinEventDemo(eventId, email, fee) {
-    return this.makeRequest(`/events/${encodeURIComponent(eventId)}/joinDemo`, {
-      method: 'POST',
-      body: JSON.stringify({ email, fee }),
-    });
+    console.warn('[api.legacy] joinEventDemo() removed — use real join route');
+    throw new Error('Removed: joinEventDemo');
   }
 
   // ---- Credits ----
   async getBalance(email) {
     const enc = encodeURIComponent(String(email || '').toLowerCase());
-    const resp = await this.makeRequest(`/credits/${enc}`); // { balance: number (cents) }
-    const cents =
-      typeof resp?.balance === 'number'
-        ? resp.balance
-        : typeof resp?.credits === 'number'
-          ? resp.credits
-          : 0;
-    return cents;
+    const resp = await this.makeRequest(`/credits/${enc}/wallets`); // { success, email, skill, dollars }
+    const { skill = 0, dollars = 0 } = resp || {};
+    return Number(skill) + Number(dollars); // keep legacy combined balance for old UIs
   }
   grantCredits(email, delta, note) {
-    console.log('[api.grantCredits]', JSON.stringify({ email, delta, note }));
-    return this.makeRequest('/credits/grant', {
-      method: 'POST',
-      body: JSON.stringify({ email, delta, note }),
-    });
+    console.warn('[api.legacy] grantCredits() is deprecated — use explicit wallet v2 endpoints');
+    throw new Error('Deprecated: grantCredits — migrate to explicit wallet endpoints');
   }
   applyCredits(email, delta, note) {
-    console.log('[api.applyCredits]', JSON.stringify({ email, delta, note }));
-    return this.makeRequest('/credits/apply', {
-      method: 'POST',
-      body: JSON.stringify({ email, delta, note }),
-    });
+    console.warn('[api.legacy] applyCredits() is deprecated — use explicit wallet v2 endpoints');
+    throw new Error('Deprecated: applyCredits — migrate to explicit wallet endpoints');
   }
-  getHistory(email, { q = '', limit = 100 } = {}) {
+  async getHistory(email, { q = '', limit = 100 } = {}) {
     const enc = encodeURIComponent(String(email || '').toLowerCase());
-    const qs = new URLSearchParams({ q, limit: String(limit) }).toString();
-    return this.makeRequest(`/credits/${enc}/history?${qs}`);
+    const qs = new URLSearchParams({ limit: String(limit), sort: 'desc' }).toString();
+    const resp = await this.makeRequest(`/transactions/${enc}?${qs}`);
+    // Normalize to legacy shape `{ history: [...] }` if callers expect it
+    if (Array.isArray(resp?.items)) return resp.items;
+    if (Array.isArray(resp)) return resp; // tolerate direct arrays
+    return [];
   }
 
   // ---- User Joins (tolerant to multiple server shapes) ----
@@ -146,12 +137,12 @@ export const getEvents = (...a) => api.getEvents(...a);
 export const createEvent = (...a) => api.createEvent(...a);
 export const recordJoin = (...a) => api.recordJoin(...a);
 export const unrecordJoin = (...a) => api.unrecordJoin(...a);
-export const joinEventDemo = (...a) => api.joinEventDemo(...a);
+export const joinEventDemo = (...a) => api.joinEventDemo(...a); // now throws by design
 
-export const getBalance = (...a) => api.getBalance(...a);
-export const grantCredits = (...a) => api.grantCredits(...a);
-export const applyCredits = (...a) => api.applyCredits(...a);
-export const getHistory = (...a) => api.getHistory(...a);
+export const getBalance = (...a) => api.getBalance(...a); // sums /wallets
+export const grantCredits = (...a) => api.grantCredits(...a); // throws deprecation
+export const applyCredits = (...a) => api.applyCredits(...a); // throws deprecation
+export const getHistory = (...a) => api.getHistory(...a);     // proxies /transactions/:email
 
 export const getUserJoins = (...a) => api.getUserJoins(...a);
 

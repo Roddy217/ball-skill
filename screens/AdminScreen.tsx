@@ -1,15 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Pressable,
-  Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Linking, Switch
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  Pressable,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  Switch,
 } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from '@react-navigation/native';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
 import { useAuth } from '../providers/AuthProvider';
 import * as bank from '../services/balanceService';
 import { addEmail } from '../services/emailStore';
+import TransactionList from '../components/TransactionList';
+
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', GREEN = '#16a34a', RED = '#ef4444';
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/,'');
@@ -67,9 +78,18 @@ async function fetchEvents(): Promise<EventRow[]> {
 }
 async function fetchHistory(email: string, q: string, limit = 50): Promise<HistRow[]> {
   const enc = encodeURIComponent(email.trim().toLowerCase());
-  const url = `/credits/${enc}/history?limit=${Math.max(1, Math.min(200, limit))}` + (q ? `&q=${encodeURIComponent(q)}` : '');
-  const data = await getJSON<{ success: boolean; history: HistRow[] }>(url);
-  return data?.history || [];
+  const lim = Math.max(1, Math.min(200, limit));
+  const qs = new URLSearchParams({ limit: String(lim), sort: 'desc' });
+  if (q) qs.set('q', q);
+  const url = `/transactions/${enc}?${qs.toString()}`;
+  const data = await getJSON<{ success: boolean; items: Array<{ ts: number; delta: number; note?: string | null; balanceAfter?: number; walletBalanceAfter?: number }> }>(url);
+  const items = Array.isArray(data?.items) ? data.items : [];
+  return items.map(it => ({
+    ts: Number(it.ts) || Date.now(),
+    delta: Number(it.delta) || 0,
+    note: it.note ?? null,
+    balanceAfter: Number(it.balanceAfter ?? it.walletBalanceAfter ?? 0),
+  }));
 }
 
 async function createEvent(ev: any) { return postJSON('/events', ev); }
@@ -78,8 +98,10 @@ async function applyCredits(email: string, delta: number, note?: string) {
 }
 async function getBalance(email: string): Promise<number> {
   const enc = encodeURIComponent(email.trim().toLowerCase());
-  const data = await getJSON<{ success: boolean; balance: number }>(`/credits/${enc}`);
-  return Number(data?.balance || 0);
+  const data = await getJSON<{ success: boolean; email: string; skill: number; dollars: number }>(`/credits/${enc}/wallets`);
+  const skill = Number(data?.skill || 0);
+  const dollars = Number(data?.dollars || 0);
+  return skill + dollars;
 }
 async function submitResult(eventId: string, payload: any) {
   return postJSON(`/events/${encodeURIComponent(eventId.trim())}/submit`, payload);
@@ -318,32 +340,10 @@ const refreshMyBalance = useCallback(async () => {
   const [gBal, setGBal] = useState<number | null>(null);
   const [gBalLoading, setGBalLoading] = useState(false);
 
-  // History
-  const [hItems, setHItems] = useState<HistRow[]>([]);
-  const [hLoading, setHLoading] = useState(false);
-  const [hQ, setHQ] = useState('');
-  const [hLimit, setHLimit] = useState('50');
-  const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest');
-  const [signFilter, setSignFilter] = useState<'all' | 'credits' | 'debits'>('all');
-
-  const loadHistory = useCallback(async (email: string, q: string, limitNum: number) => {
-    if (!email.trim()) { setHItems([]); return; }
-    setHLoading(true);
-    try {
-      const list = await fetchHistory(email, q, limitNum);
-      setHItems(list);
-    } catch {
-      setHItems([]);
-    } finally {
-      setHLoading(false);
-    }
-  }, []);
-
-  // debounce: balance + history when email or filter changes
+  // debounce: balance when email changes (history is handled by <TransactionList>)
   useEffect(() => {
     let t: any;
-    const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
-    if (!gEmail.trim()) { setGBal(null); setHItems([]); return; }
+    if (!gEmail.trim()) { setGBal(null); return; }
     setGBalLoading(true);
     t = setTimeout(async () => {
       try {
@@ -352,20 +352,9 @@ const refreshMyBalance = useCallback(async () => {
       } finally {
         setGBalLoading(false);
       }
-      // history fetch
-      loadHistory(gEmail, hQ, limitNum);
     }, 300);
     return () => clearTimeout(t);
-  }, [gEmail, hQ, hLimit, loadHistory]);
-
-  // display rows with chips applied
-  const displayRows = useMemo(() => {
-    let rows = [...hItems];
-    if (signFilter === 'credits') rows = rows.filter(r => r.delta > 0);
-    if (signFilter === 'debits') rows = rows.filter(r => r.delta < 0);
-    if (sortMode === 'oldest') rows = rows.slice().reverse(); // API returns newest first
-    return rows;
-  }, [hItems, sortMode, signFilter]);
+  }, [gEmail]);
 
   const gDeltaNum = useMemo(() => Number(gDelta) || 0, [gDelta]);
 
@@ -398,10 +387,6 @@ const refreshMyBalance = useCallback(async () => {
         await refreshMyBalance();
       }
 
-      // 6) refresh history immediately
-      const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
-      await loadHistory(gEmail, hQ, limitNum);
-
       // auto-clear inputs after success
       setGDelta('');
       setGNote('');
@@ -417,7 +402,7 @@ const refreshMyBalance = useCallback(async () => {
       setGBusy(false);
       console.log('[Admin][doGrant] END');
     }
-  }, [gEmail, gDelta, gNote, gWallet, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
+  }, [gEmail, gDelta, gNote, gWallet, refreshMyBalance, user?.email]);
 
   const doDeduct = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
@@ -448,10 +433,6 @@ const refreshMyBalance = useCallback(async () => {
         await refreshMyBalance();
       }
   
-      // 6) refresh history immediately
-      const limitNum = Math.max(1, Math.min(200, Number(hLimit) || 50));
-      await loadHistory(gEmail, hQ, limitNum);
-  
       // auto-clear inputs after success
       setGDelta('');
       setGNote('');
@@ -467,7 +448,7 @@ const refreshMyBalance = useCallback(async () => {
       setGBusy(false);
       console.log('[Admin][doDeduct] END');
     }
-  }, [gEmail, gDelta, gNote, gWallet, hLimit, hQ, loadHistory, refreshMyBalance, user?.email]);
+  }, [gEmail, gDelta, gNote, gWallet, refreshMyBalance, user?.email]);
 
   const refreshGBal = useCallback(async () => {
     if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email.'); return; }
@@ -542,61 +523,6 @@ const refreshMyBalance = useCallback(async () => {
   const chips = useMemo(() => ([100, 500, 1000, 2500, 5000]), []);
   const chipLabel = (c: number) => toDollars(c);
 
-  // Copy note
-  const copyNote = useCallback(async (note?: string | null) => {
-    if (!note) return;
-    try {
-      await Clipboard.setStringAsync(note);
-      Alert.alert('Copied', 'Note copied to clipboard.');
-    } catch {
-      Alert.alert('Copy failed', 'Could not copy note.');
-    }
-  }, []);
-
-  // CSV + email helpers
-  const buildCSV = useCallback((rows: HistRow[]) => {
-    const header = 'timestamp_iso,delta_cents,delta_dollars,note,balance_after_cents,balance_after_dollars';
-    const lines = rows.map(r => {
-      const iso = new Date(r.ts).toISOString();
-      const deltaC = Number(r.delta)||0;
-      const note = (r.note ?? '').toString().replace(/"/g,'""');
-      const balC = Number(r.balanceAfter)||0;
-      return [
-        `"${iso}"`,
-        `${deltaC}`,
-        `"${toDollars(deltaC)}"`,
-        `"${note}"`,
-        `${balC}`,
-        `"${toDollars(balC)}"`
-      ].join(',');
-    });
-    return [header, ...lines].join('\n');
-  }, []);
-
-  const emailBodySafe = (text: string) =>
-    encodeURIComponent(text).replace(/%0A/g, '%0D%0A'); // better newline rendering in mail clients
-
-  const handleEmailCSV = useCallback(() => {
-    if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email first.'); return; }
-    const csv = buildCSV(displayRows);
-    const subject = `Ball Skill credit history for ${gEmail.trim().toLowerCase()}`;
-    const body = emailBodySafe(csv);
-    const mailto = `mailto:${encodeURIComponent(gEmail.trim().toLowerCase())}?subject=${encodeURIComponent(subject)}&body=${body}`;
-    Linking.openURL(mailto).catch(() => Alert.alert('Email', 'Could not open mail app.'));
-  }, [gEmail, displayRows, buildCSV]);
-
-  const handleEmailNotes = useCallback(() => {
-    if (!gEmail.trim()) { Alert.alert('Missing', 'Enter an email first.'); return; }
-    const lines = displayRows.map(r => {
-      const when = new Date(r.ts).toLocaleString();
-      const sign = r.delta >= 0 ? '+' : '';
-      return `• ${when} — ${sign}${toDollars(r.delta)} — bal ${toDollars(r.balanceAfter)} — ${r.note ?? ''}`;
-    }).join('\n');
-    const subject = `Ball Skill credit notes for ${gEmail.trim().toLowerCase()}`;
-    const body = emailBodySafe(lines || 'No history.');
-    const mailto = `mailto:${encodeURIComponent(gEmail.trim().toLowerCase())}?subject=${encodeURIComponent(subject)}&body=${body}`;
-    Linking.openURL(mailto).catch(() => Alert.alert('Email', 'Could not open mail app.'));
-  }, [gEmail, displayRows]);
 
   return (
     <KeyboardAvoidingView
@@ -809,109 +735,11 @@ const refreshMyBalance = useCallback(async () => {
 
           {/* History */}
           <Text style={[s.cardTitle, { marginTop: 12 }]}>History</Text>
-
-          {/* Chips: sort/filter */}
-          <View style={s.chipRow}>
-            <TouchableOpacity
-              style={[s.drillChip, sortMode==='newest' && s.drillChipActive]}
-              onPress={() => setSortMode('newest')}
-            ><Text style={[s.drillChipText, sortMode==='newest' && s.drillChipTextActive]}>Newest</Text></TouchableOpacity>
-
-            <TouchableOpacity
-              style={[s.drillChip, sortMode==='oldest' && s.drillChipActive]}
-              onPress={() => setSortMode('oldest')}
-            ><Text style={[s.drillChipText, sortMode==='oldest' && s.drillChipTextActive]}>Oldest</Text></TouchableOpacity>
-
-            <TouchableOpacity
-              style={[s.drillChip, signFilter==='credits' && s.drillChipActive]}
-              onPress={() => setSignFilter('credits')}
-            ><Text style={[s.drillChipText, signFilter==='credits' && s.drillChipTextActive]}>Credits</Text></TouchableOpacity>
-
-            <TouchableOpacity
-              style={[s.drillChip, signFilter==='debits' && s.drillChipActive]}
-              onPress={() => setSignFilter('debits')}
-            ><Text style={[s.drillChipText, signFilter==='debits' && s.drillChipTextActive]}>Debits</Text></TouchableOpacity>
-
-            <TouchableOpacity
-              style={[s.drillChip, signFilter==='all' && s.drillChipActive]}
-              onPress={() => setSignFilter('all')}
-            ><Text style={[s.drillChipText, signFilter==='all' && s.drillChipTextActive]}>All</Text></TouchableOpacity>
-          </View>
-
-          {/* Search + Limit (with label) */}
-          <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
-            <TextInput
-              style={[s.input, { flex:1 }]}
-              placeholder="search notes (optional)"
-              placeholderTextColor={MUTED}
-              value={hQ}
-              onChangeText={setHQ}
-            />
-            <View style={{ width:110 }}>
-              <Text style={[s.meta, { marginBottom: -2 }]}>Limit</Text>
-              <TextInput
-                style={[s.input, { textAlign:'center', marginTop:4 }]}
-                placeholder="50"
-                placeholderTextColor={MUTED}
-                value={hLimit}
-                onChangeText={setHLimit}
-                keyboardType="number-pad"
-              />
-            </View>
-          </View>
-
-          <View style={s.historyBox}>
-            {hLoading ? (
-              <View style={{ padding:12, flexDirection:'row', alignItems:'center', gap:8 }}>
-                <ActivityIndicator color={ORANGE} />
-                <Text style={s.meta}>Loading history…</Text>
-              </View>
-            ) : displayRows.length === 0 ? (
-              <Text style={[s.meta, { padding:12 }]}>No history.</Text>
-            ) : (
-              <ScrollView style={s.historyScroll} nestedScrollEnabled>
-                {displayRows.map((it, idx) => {
-                  const color = colorForAmount(it.delta, it.note);
-                  const badge = badgeFor(it.delta, it.note);
-                  const when = new Date(it.ts).toLocaleString();
-                  const hasNote = !!(it.note && it.note.length);
-                  return (
-                    <View key={idx} style={s.historyRow}>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
-                        <Text style={[s.histDelta, { color }]}>
-                          {fmtDelta(it.delta)}{badge ? ' ' : ''}<Text style={{ color }}>{badge}</Text>
-                        </Text>
-                        <Text style={s.histWhen}>{when}</Text>
-                      </View>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4, alignItems:'center' }}>
-                        <Text style={s.histBalance}>Balance: {toDollars(it.balanceAfter)}</Text>
-                        {hasNote ? (
-                          <TouchableOpacity onPress={() => copyNote(it.note)} style={s.copyBtn}>
-                            <Text style={s.copyBtnText}>Copy</Text>
-                          </TouchableOpacity>
-                        ) : null}
-                      </View>
-                      {hasNote ? (
-                        <Text style={[s.histNote, { marginTop:6 }]} numberOfLines={2}>{it.note}</Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
-                <View style={{ height: 6 }} />
-                
-              </ScrollView>
-            )}
-          </View>
-
-          {/* Export / Email */}
-          <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
-            <TouchableOpacity style={[s.btn, { flex:1 }]} onPress={handleEmailCSV}>
-              <Text style={s.btnText}>Email CSV</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[s.btnOutline, { flex:1 }]} onPress={handleEmailNotes}>
-              <Text style={s.btnOutlineText}>Email Notes</Text>
-            </TouchableOpacity>
-          </View>
+          <TransactionList
+            variant="admin"
+            email={(gEmail || '').trim() || undefined}
+            embedded
+          />
         </View>
 
         {/* Submit Result */}

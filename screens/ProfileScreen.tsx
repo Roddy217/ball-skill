@@ -7,6 +7,7 @@ import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory } from '
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
 import { Ionicons } from '@expo/vector-icons';
+import TransactionList from '../components/TransactionList';
 
 async function normalizeJoins(email: string) {
   try {
@@ -84,6 +85,7 @@ type CreditEntry = {
   delta: number;           // cents, positive or negative
   note?: string | null;
   balanceAfter: number;    // cents
+  wallet?: 'skill' | 'dollars'; // v2 field from backend
 };
 
 // ---- Wallet routing helpers (shared) ----
@@ -91,14 +93,13 @@ const SKILL_COLOR   = '#FF6600';  // orange
 const DOLLARS_COLOR = '#16a34a';  // green
 const DEBIT_COLOR   = '#ef4444';  // red
 
-/** Detects whether a note should route to the Skill wallet (promo/bonus/demo/etc.) */
-const isSkillTag = (note?: string | null) =>
-  /(^|\s)(promo|bonus|demo|skill wallet|signup|referral)(\s|$)/i.test(String(note || ''));
+/** Prefer backend wallet field; fall back to note tags only if wallet missing */
+const isSkillTag = (note?: string | null) => /(^|\s)(promo|bonus|demo|skill wallet|signup|referral)(\s|$)/i.test(String(note || ''));
 
-/** Returns the color to use for an amount, based on delta + note tags */
-const colorForAmount = (delta: number, note?: string | null) => {
+const colorForAmount = (delta: number, wallet?: 'skill' | 'dollars', note?: string | null) => {
   if (delta < 0) return DEBIT_COLOR;
-  return isSkillTag(note) ? SKILL_COLOR : DOLLARS_COLOR;
+  const w = wallet || (isSkillTag(note) ? 'skill' : 'dollars');
+  return w === 'skill' ? SKILL_COLOR : DOLLARS_COLOR;
 };
 
 // --- UI ---
@@ -173,6 +174,9 @@ export default function ProfileScreen() {
       const list = await getCreditsHistory(email, { limit: 100 } as any);
       console.log('[Profile][History] loaded', Array.isArray(list) ? list.length : 0);
       setHistory(Array.isArray(list) ? list as any : []);
+      if (Array.isArray(list) && list.length) {
+        console.log('[Profile][History][sample]', list[0]);
+      }
     } catch (e) {
       console.log('[Profile][History][err]', e);
       setHistory([]);
@@ -779,9 +783,8 @@ export default function ProfileScreen() {
                               <Text style={s.histMeta}>{new Date(it.ts).toLocaleString()}</Text>
                             </View>
                             <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={[s.histDeltaPlus, { color: colorForAmount(it.delta, it.note) }]}>
-                              {it.delta >= 0 ? '+' : '−'}${fmtDollars(Math.abs(it.delta))}
-                              {it.delta >= 0 ? (isSkillTag(it.note) ? ' [Skill]' : ' [Dollars]') : ''}
+                            <Text style={[s.histDeltaPlus, { color: colorForAmount(it.delta, it.wallet, it.note) }]}>
+                              {it.delta >= 0 ? '+' : '−'}${fmtDollars(Math.abs(it.delta))} { (it.wallet || (isSkillTag(it.note) ? 'skill' : 'dollars')) === 'skill' ? '[Skill]' : '[Dollars]'}
                             </Text>
                             </View>
                           </View>
