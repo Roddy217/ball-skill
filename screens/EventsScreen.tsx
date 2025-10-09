@@ -146,7 +146,8 @@ function LiveEventsSection({
   loading, events, onRefresh,
   joinedMap, joiningMap,
   getJoinWallet, setJoinWalletByEvent,
-  onJoinLive, onUnjoinLive, hasEmail
+  onJoinLive, onUnjoinLive, hasEmail,
+  onCopyId,
 }: {
   loading: boolean;
   events: any[];
@@ -158,6 +159,7 @@ function LiveEventsSection({
   onJoinLive: (ev: any) => void;
   onUnjoinLive: (ev: any) => void;
   hasEmail: boolean;
+  onCopyId: (id: string) => void;
 }) {
   return (
     <View style={{ marginTop: 16, paddingHorizontal: 12 }}>
@@ -190,7 +192,7 @@ function LiveEventsSection({
             </Text>
 
             {/* Copyable Event ID chip */}
-            <Pressable onPress={() => copyEventId(ev.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
+            <Pressable onPress={() => onCopyId(ev.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
               <Text style={s.idChipText}>ID: {ev.id}</Text>
             </Pressable>
 
@@ -758,6 +760,7 @@ useFocusEffect(
               onJoinLive={onJoinLive}
               onUnjoinLive={onUnjoinLive}
               hasEmail={hasEmail}
+              onCopyId={copyEventId}
             />
           </View>
         }

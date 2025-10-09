@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
   Alert,
   Switch,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import AutoEmail from '../components/AutoEmail';
 import AutoEventId from '../components/AutoEventId';
@@ -184,6 +185,67 @@ const refreshMyBalance = useCallback(async () => {
     );
   }
   
+  // Sticky nav: capture Y offsets for sections
+  const scrollRef = useRef<ScrollView>(null);
+  const [yBalance, setYBalance] = useState(0);
+  const [yGrant, setYGrant] = useState(0);
+  const [yHistory, setYHistory] = useState(0);
+  const [yResults, setYResults] = useState(0);
+  const [yCreate, setYCreate] = useState(0);
+  const [yDirect, setYDirect] = useState(0);
+  const [yDemo, setYDemo] = useState(0);
+
+  const jump = (y: number) => {
+    try {
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });
+    } catch {}
+  };
+
+  type AdminTab = 'Balance' | 'Grant' | 'History' | 'Results' | 'Create';
+  const [activeTab, setActiveTab] = useState<AdminTab>('Balance');
+
+  // Collapsible section open/closed states
+const [openBalance, setOpenBalance] = useState(true);
+const [openGrant, setOpenGrant] = useState(true);
+const [openHistory, setOpenHistory] = useState(true);
+const [openResults, setOpenResults] = useState(true);
+const [openCreate, setOpenCreate] = useState(true);
+const [openDirect, setOpenDirect] = useState(false);
+const [openDemo, setOpenDemo] = useState(false);
+const [histLimit, setHistLimit] = useState(50);
+
+  // Persist collapse states
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('adminOpenStates');
+        if (raw) {
+          const v = JSON.parse(raw);
+          if (typeof v.openBalance === 'boolean') setOpenBalance(!!v.openBalance);
+          if (typeof v.openGrant === 'boolean') setOpenGrant(!!v.openGrant);
+          if (typeof v.openHistory === 'boolean') setOpenHistory(!!v.openHistory);
+          if (typeof v.openResults === 'boolean') setOpenResults(!!v.openResults);
+          if (typeof v.openCreate === 'boolean') setOpenCreate(!!v.openCreate);
+          if (typeof v.openDirect === 'boolean') setOpenDirect(!!v.openDirect);
+          if (typeof v.openDemo === 'boolean') setOpenDemo(!!v.openDemo);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    const payload = {
+      openBalance,
+      openGrant,
+      openHistory,
+      openResults,
+      openCreate,
+      openDirect,
+      openDemo,
+    };
+    AsyncStorage.setItem('adminOpenStates', JSON.stringify(payload)).catch(() => {});
+  }, [openBalance, openGrant, openHistory, openResults, openCreate, openDirect, openDemo]);
+
   // Events cache for dynamic drills
   const [events, setEvents] = useState<EventRow[]>([]);
   const [evLoading, setEvLoading] = useState(false);
@@ -265,7 +327,6 @@ const refreshMyBalance = useCallback(async () => {
   const [seedBusy, setSeedBusy] = useState(false);
 
   // --- Direct Wallet Ops ---
-  const [dwEnabled, setDwEnabled] = useState(false);
   const [dwEmail, setDwEmail] = useState('');
   const [dwAmount, setDwAmount] = useState(''); // dollars as string, e.g. "100.00"
   const [dwWallet, setDwWallet] = useState<'skill' | 'dollars'>('skill');
@@ -283,18 +344,17 @@ const refreshMyBalance = useCallback(async () => {
       ];
       for (const ev of eventsToMake) await createEvent(ev);
       for (const e of ['test@ballskill.com','alice@ballskill.com','bob@ballskill.com']) {
-        await applyCredits(e, 2500, 'seed');
+        await applyDirectToWallet({ email: e, wallet: 'dollars', delta: 2500, note: 'seed' });
       }
-      await reloadEvents(); // reflect new events
-      await bank.refresh(email, 'admin-apply');
-      console.log('[Admin][balance] refreshed after apply');
+      await reloadEvents();
+      await bank.refresh(email, 'admin-seed');
       Alert.alert('Seed', 'Seeded 2 events + granted $25 to 3 users.');
     } catch (e:any) {
       Alert.alert('Seed failed', String(e?.message || e));
     } finally {
       setSeedBusy(false);
     }
-  }, [reloadEvents]);
+  }, [reloadEvents, email]);
 
   const submitDirectWallet = useCallback(async () => {
     const email = (dwEmail || '').trim().toLowerCase();
@@ -531,24 +591,264 @@ const refreshMyBalance = useCallback(async () => {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
     >
       <ScrollView
+        ref={scrollRef}
+        stickyHeaderIndices={[0]}     // ← make first child sticky
+        onScroll={(e) => {
+          const y = e.nativeEvent.contentOffset.y + 16;
+          const anchors: Array<{name: AdminTab; y: number}> = [
+            { name: 'Balance', y: yBalance },
+            { name: 'Grant',   y: yGrant },
+            { name: 'History', y: yHistory },
+            { name: 'Results', y: yResults },
+            { name: 'Create',  y: yCreate },
+          ]
+            .filter(a => a.y > 0)
+            .sort((a,b) => a.y - b.y);
+
+          let current: AdminTab = 'Balance';
+          for (const a of anchors) {
+            if (y >= a.y - 24) current = a.name;
+            else break;
+          }
+          if (current !== activeTab) setActiveTab(current);
+        }}
+        scrollEventThrottle={16}
         style={{ flex:1, backgroundColor:'#000' }}
         contentContainerStyle={{ padding:16, paddingBottom: 200 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         scrollIndicatorInsets={{ bottom: 80 }}
       >
-        {/* -------- Direct Wallet Ops (explicit add/deduct to a chosen wallet) -------- */}
+        {/* -------- Sticky Nav -------- */}
+        <View style={{ paddingTop: 8, paddingBottom: 8, backgroundColor: '#000' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap', backgroundColor: '#0b0b0b', borderRadius: 999, paddingVertical: 6, paddingHorizontal: 8 }}>
+            {/* chips unchanged */}
+            {[
+              {t:'Balance', key:'Balance' as AdminTab, y:()=>yBalance},
+              {t:'Grant/Deduct', key:'Grant' as AdminTab, y:()=>yGrant},
+              {t:'History', key:'History' as AdminTab, y:()=>yHistory},
+              {t:'Enter Result', key:'Results' as AdminTab, y:()=>yResults},
+              {t:'Create Event', key:'Create' as AdminTab, y:()=>yCreate},
+            ].map(({t,key,y}) => {
+              const active = activeTab === key;
+              return (
+                <Pressable key={t} onPress={() => jump(y())} hitSlop={8} style={({pressed})=>[s.drillChip, active && s.drillChipActive, pressed && {opacity:0.85}] }>
+                  <Text style={[s.drillChipText, active && s.drillChipTextActive]}>{t}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
+        <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
+
+        {/* --- My Balance (quick refresh) --- */}
+        <View onLayout={(e)=>setYBalance(e.nativeEvent.layout.y)} style={{ backgroundColor:'#111', borderColor:'#2a2a2a', borderWidth:1, borderRadius:12, padding:12, marginBottom:12 }}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+            <Text style={{ color:'#fff', fontWeight:'800' }}>My Balance</Text>
+            <Pressable onPress={() => setOpenBalance(v=>!v)} hitSlop={8}>
+              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openBalance ? 'Collapse' : 'Expand'}</Text>
+            </Pressable>
+          </View>
+
+          {openBalance && (
+            <View style={{ marginTop:8 }}>
+              <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+                <Text style={{ color:'#9a9a9a', fontVariant:['tabular-nums'] }}>
+                  {adminBalCents == null ? '—' : `${(adminBalCents/100).toFixed(2)}`}
+                </Text>
+                <Pressable
+                  onPress={refreshMyBalance}
+                  disabled={balRefreshing}
+                  style={({ pressed }) => [
+                    { borderColor:'#FF6600', borderWidth:1, borderRadius:999, paddingVertical:6, paddingHorizontal:12 },
+                    pressed && { opacity:0.9 }
+                  ]}
+                  hitSlop={8}
+                >
+                  {balRefreshing
+                    ? <ActivityIndicator color="#FF6600" />
+                    : <Text style={{ color:'#FF6600', fontWeight:'800' }}>Refresh</Text>}
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+
+        {/* Grant / Deduct */}
+        
+        <View onLayout={(e)=>setYGrant(e.nativeEvent.layout.y)} style={s.card}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+            <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
+            <Pressable onPress={() => setOpenGrant(v => !v)} hitSlop={8}>
+              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openGrant ? 'Collapse' : 'Expand'}</Text>
+            </Pressable>
+          </View>
+
+          {openGrant && (
+            <>
+              {/* Email */}
+              <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
+              <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
+              <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', minHeight:18, marginTop:6 }}>
+                {gBalLoading ? (
+                  <View style={{ flexDirection:'row', alignItems:'center', gap:6 }}>
+                    <ActivityIndicator color={ORANGE} size="small" />
+                    <Text style={s.meta}>Fetching balance…</Text>
+                  </View>
+                ) : (
+                  <Text style={s.meta}>
+                    Balance: <Text style={{color:'#fff'}}>{gBal != null ? toDollars(gBal) : '—'}</Text>
+                  </Text>
+                )}
+                <Pressable
+                  onPress={refreshGBal}
+                  disabled={gBalLoading || !gEmail.trim()}
+                  style={({ pressed }) => [
+                    { borderColor: ORANGE, borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, marginLeft: 10 },
+                    pressed && { opacity: 0.9 },
+                    (!gEmail.trim() || gBalLoading) && { opacity: 0.6 }
+                  ]}
+                  hitSlop={8}
+                >
+                  {gBalLoading
+                    ? <ActivityIndicator color={ORANGE} />
+                    : <Text style={{ color: ORANGE, fontWeight: '800' }}>Refresh</Text>}
+                </Pressable>
+              </View>
+
+              {/* Amount */}
+              <Text style={[s.meta, { marginTop: 10 }]}>Amount (cents)</Text>
+              <View style={s.amountRow}>
+                <TextInput
+                  style={[s.input, { flex:1 }]}
+                  placeholder="delta cents (e.g., 500)"
+                  placeholderTextColor={MUTED}
+                  value={gDelta}
+                  onChangeText={setGDelta}
+                  keyboardType="number-pad"
+                />
+                <Text style={s.amountPreview}>= {toDollars(gDeltaNum)}</Text>
+              </View>
+
+              {/* Quick chips */}
+              <View style={s.chipRow}>
+                {chips.map(c => (
+                  <TouchableOpacity key={c} style={s.chip} onPress={() => setGDelta(String(c))}>
+                    <Text style={s.chipText}>{chipLabel(c)}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Wallet selector for Grant/Deduct */}
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                <TouchableOpacity
+                  onPress={() => setGWallet('skill')}
+                  style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: gWallet === 'skill' ? '#FFB84D' : '#333', backgroundColor: gWallet === 'skill' ? '#2a200f' : '#1a1a1a' }}
+                >
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>Skill wallet</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setGWallet('dollars')}
+                  style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: gWallet === 'dollars' ? '#7DFF70' : '#333', backgroundColor: gWallet === 'dollars' ? '#103014' : '#1a1a1a' }}
+                >
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>Dollars wallet</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Note */}
+              <View style={s.noteHeaderRow}>
+                <Text style={[s.meta, { marginTop: 10, marginBottom: 0 }]}>Note (optional)</Text>
+                {gNote ? (
+                  <Pressable
+                    onPress={() => setGNote('')}
+                    hitSlop={8}
+                    style={({ pressed }) => [s.clearChip, pressed && { opacity: 0.85 }]}
+                  >
+                    <Text style={s.clearChipText}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              <TextInput
+                style={s.input}
+                placeholder="e.g., refund / promo / manual adj"
+                placeholderTextColor={MUTED}
+                value={gNote}
+                onChangeText={setGNote}
+              />
+              {/* Actions */}
+              <View style={{ flexDirection:'row', gap:10 }}>
+                <TouchableOpacity disabled={gBusy} style={[s.btn, { flex:1 }, gBusy && s.btnDisabled]} onPress={doGrant}>
+                  <Text style={s.btnText}>{gBusy ? 'Working…' : 'Grant'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity disabled={gBusy} style={[s.btnOutline, { flex:1 }, gBusy && s.btnDisabled]} onPress={doDeduct}>
+                  <Text style={s.btnOutlineText}>{gBusy ? 'Working…' : 'Deduct'}</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Transaction History (own card) */}
+        <View onLayout={e => setYHistory(e.nativeEvent.layout.y)} style={s.card}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+            <Text style={s.cardTitle}>Transaction History</Text>
+            <Pressable onPress={() => setOpenHistory(v => !v)} hitSlop={8}>
+              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openHistory ? 'Collapse' : 'Expand'}</Text>
+            </Pressable>
+          </View>
+
+          {openHistory && (
+            <>
+              {/* Show X selector */}
+              <View style={[s.chipRow, { marginTop: 0 }]}>
+                {[25,50,100].map(n => (
+                  <TouchableOpacity key={n} style={[s.chip, histLimit===n && s.drillChipActive]} onPress={() => setHistLimit(n)}>
+                    <Text style={[s.chipText, histLimit===n && s.drillChipTextActive]}>show {n}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Contained scroll */}
+              <ScrollView style={{ maxHeight: 360 }} nestedScrollEnabled>
+                <TransactionList
+                  variant="admin"
+                  email={(gEmail || '').trim() || undefined}
+                  embedded
+                  pageSize={histLimit}
+                />
+              </ScrollView>
+            </>
+          )}
+        </View>
+        {/* Create Event (placeholder) */}
+        <View onLayout={e => setYCreate(e.nativeEvent.layout.y)} style={s.card}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+            <Text style={s.cardTitle}>Create Event</Text>
+            <Pressable onPress={() => setOpenCreate(v => !v)} hitSlop={8}>
+              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openCreate ? 'Collapse' : 'Expand'}</Text>
+            </Pressable>
+          </View>
+          {openCreate && (
+            <Text style={s.meta}>Coming soon — centralized creation for live/demo with validation.</Text>
+          )}
+        </View>
+
+        {/* -------- Direct Wallet Ops (toggleable) -------- */}
         <View style={{ marginTop: 24, padding: 12, borderRadius: 8, backgroundColor: '#111', borderColor: '#333', borderWidth: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>Direct Wallet Ops</Text>
-            <Switch value={dwEnabled} onValueChange={setDwEnabled} />
+            <Switch value={openDirect} onValueChange={setOpenDirect} />
           </View>
 
-          {dwEnabled && (
+          {openDirect && (
             <View style={{ marginTop: 12, gap: 10 }}>
+              {/* Email */}
               <Text style={{ color: '#ccc' }}>User Email</Text>
               <AutoEmail value={dwEmail} onChangeText={setDwEmail} placeholder="user email" style={s.input} />
 
+              {/* Amount */}
               <Text style={{ color: '#ccc' }}>Amount ($)</Text>
               <TextInput
                 placeholder="100.00"
@@ -559,24 +859,39 @@ const refreshMyBalance = useCallback(async () => {
                 style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
               />
 
+              {/* Wallet picker */}
               <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TouchableOpacity onPress={() => setDwWallet('skill')} style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: dwWallet === 'skill' ? '#FFB84D' : '#333', backgroundColor: dwWallet === 'skill' ? '#2a200f' : '#1a1a1a' }}>
+                <TouchableOpacity
+                  onPress={() => setDwWallet('skill')}
+                  style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: dwWallet === 'skill' ? '#FFB84D' : '#333', backgroundColor: dwWallet === 'skill' ? '#2a200f' : '#1a1a1a' }}
+                >
                   <Text style={{ color: '#fff', fontWeight: '800' }}>Skill Wallet</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setDwWallet('dollars')} style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: dwWallet === 'dollars' ? '#7DFF70' : '#333', backgroundColor: dwWallet === 'dollars' ? '#103014' : '#1a1a1a' }}>
+                <TouchableOpacity
+                  onPress={() => setDwWallet('dollars')}
+                  style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: dwWallet === 'dollars' ? '#7DFF70' : '#333', backgroundColor: dwWallet === 'dollars' ? '#103014' : '#1a1a1a' }}
+                >
                   <Text style={{ color: '#fff', fontWeight: '800' }}>Dollars Wallet</Text>
                 </TouchableOpacity>
               </View>
 
+              {/* Mode picker */}
               <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TouchableOpacity onPress={() => setDwMode('add')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: dwMode === 'add' ? '#FF6600' : '#333', backgroundColor: dwMode === 'add' ? '#2a170a' : '#1a1a1a' }}>
+                <TouchableOpacity
+                  onPress={() => setDwMode('add')}
+                  style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: dwMode === 'add' ? '#FF6600' : '#333', backgroundColor: dwMode === 'add' ? '#2a170a' : '#1a1a1a' }}
+                >
                   <Text style={{ color: '#fff', fontWeight: '800' }}>Add</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setDwMode('deduct')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: dwMode === 'deduct' ? '#FF6600' : '#333', backgroundColor: dwMode === 'deduct' ? '#2a170a' : '#1a1a1a' }}>
+                <TouchableOpacity
+                  onPress={() => setDwMode('deduct')}
+                  style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, borderWidth: 1, borderColor: dwMode === 'deduct' ? '#FF6600' : '#333', backgroundColor: dwMode === 'deduct' ? '#2a170a' : '#1a1a1a' }}
+                >
                   <Text style={{ color: '#fff', fontWeight: '800' }}>Deduct</Text>
                 </TouchableOpacity>
               </View>
 
+              {/* Note */}
               <Text style={{ color: '#ccc' }}>Note (optional)</Text>
               <TextInput
                 placeholder={dwMode === 'add' ? 'e.g., admin grant' : 'e.g., adjustment'}
@@ -586,313 +901,187 @@ const refreshMyBalance = useCallback(async () => {
                 style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
               />
 
-              <TouchableOpacity onPress={submitDirectWallet} disabled={dwBusy} style={{ marginTop: 8, backgroundColor: '#FF6600', paddingVertical: 12, borderRadius: 6, alignItems: 'center' }}>
-                <Text style={{ color: '#000', fontWeight: '800' }}>{dwBusy ? 'Working…' : (dwMode === 'add' ? 'Add to Wallet' : 'Deduct from Wallet')}</Text>
+              {/* Submit */}
+              <TouchableOpacity
+                onPress={submitDirectWallet}
+                disabled={dwBusy}
+                style={{ marginTop: 8, backgroundColor: '#FF6600', paddingVertical: 12, borderRadius: 6, alignItems: 'center', opacity: dwBusy ? 0.7 : 1 }}
+              >
+                <Text style={{ color: '#000', fontWeight: '800' }}>
+                  {dwBusy ? 'Working…' : (dwMode === 'add' ? 'Add to Wallet' : 'Deduct from Wallet')}
+                </Text>
               </TouchableOpacity>
-
-              <Text style={{ color: '#888', fontSize: 12, marginTop: 6 }}>Uses explicit wallet v2 routes (no tags). Toggle off to hide. Remove later by searching for “Direct Wallet Ops”.</Text>
             </View>
           )}
         </View>
-        <Text style={s.h1}>Admin {evLoading ? <Text style={{color:MUTED, fontSize:12}}>(loading events…)</Text> : null}</Text>
-        <Text style={s.sub}>Server: <Text style={{color:'#fff'}}>{API}</Text></Text>
 
-        {/* --- My Balance (quick refresh) --- */}
-        <View style={{ backgroundColor:'#111', borderColor:'#2a2a2a', borderWidth:1, borderRadius:12, padding:12, marginBottom:12 }}>
-          <Text style={{ color:'#fff', fontWeight:'800' }}>My Balance</Text>
-          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:8 }}>
-            <Text style={{ color:'#9a9a9a', fontVariant:['tabular-nums'] }}>
-              {adminBalCents == null ? '—' : `${(adminBalCents/100).toFixed(2)}`}
-            </Text>
-            <Pressable
-              onPress={refreshMyBalance}
-              disabled={balRefreshing}
-              style={({ pressed }) => [
-                { borderColor:'#FF6600', borderWidth:1, borderRadius:999, paddingVertical:6, paddingHorizontal:12 },
-                pressed && { opacity:0.9 }
-              ]}
-              hitSlop={8}
-            >
-              {balRefreshing
-                ? <ActivityIndicator color="#FF6600" />
-                : <Text style={{ color:'#FF6600', fontWeight:'800' }}>Refresh</Text>}
-            </Pressable>
+        {/* -------- Demo: Participant Editor (toggleable) -------- */}
+        <View style={{ marginTop: 24, padding: 12, borderRadius: 8, backgroundColor: '#111', borderColor: '#333', borderWidth: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>Demo: Participant Editor</Text>
+            <Switch value={demoParticipantsEnabled} onValueChange={setDemoParticipantsEnabled} />
           </View>
-        </View>
-        
-        {/* Seed */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Seed Demo Data</Text>
-          <Text style={s.meta}>Creates 2 events and grants $25 to a few test users.</Text>
-          <TouchableOpacity disabled={seedBusy} style={[s.btn, seedBusy && s.btnDisabled]} onPress={doSeed}>
-            <Text style={s.btnText}>{seedBusy ? 'Seeding…' : 'Run Seed'}</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Grant / Deduct */}
-        
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Grant / Deduct Credits</Text>
-          
-          {/* Email */}
-          <Text style={[s.meta, { marginTop: 0 }]}>Email</Text>
-          <AutoEmail value={gEmail} onChangeText={setGEmail} placeholder="email" style={s.input} />
-          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', minHeight:18, marginTop:6 }}>
-            {gBalLoading ? (
-              <View style={{ flexDirection:'row', alignItems:'center', gap:6 }}>
-                <ActivityIndicator color={ORANGE} size="small" />
-                <Text style={s.meta}>Fetching balance…</Text>
-              </View>
-            ) : (
-              <Text style={s.meta}>
-                Balance: <Text style={{color:'#fff'}}>{gBal != null ? toDollars(gBal) : '—'}</Text>
-              </Text>
-            )}
-            <Pressable
-              onPress={refreshGBal}
-              disabled={gBalLoading || !gEmail.trim()}
-              style={({ pressed }) => [
-                { borderColor: ORANGE, borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, marginLeft: 10 },
-                pressed && { opacity: 0.9 },
-                (!gEmail.trim() || gBalLoading) && { opacity: 0.6 }
-              ]}
-              hitSlop={8}
-            >
-              {gBalLoading
-                ? <ActivityIndicator color={ORANGE} />
-                : <Text style={{ color: ORANGE, fontWeight: '800' }}>Refresh</Text>}
-            </Pressable>
-          </View>
-
-          {/* Amount */}
-          <Text style={[s.meta, { marginTop: 10 }]}>Amount (cents)</Text>
-          <View style={s.amountRow}>
-            <TextInput
-              style={[s.input, { flex:1 }]}
-              placeholder="delta cents (e.g., 500)"
-              placeholderTextColor={MUTED}
-              value={gDelta}
-              onChangeText={setGDelta}
-              keyboardType="number-pad"
-            />
-            <Text style={s.amountPreview}>= {toDollars(gDeltaNum)}</Text>
-          </View>
-
-          {/* Quick chips */}
-          <View style={s.chipRow}>
-            {chips.map(c => (
-              <TouchableOpacity key={c} style={s.chip} onPress={() => setGDelta(String(c))}>
-                <Text style={s.chipText}>{chipLabel(c)}</Text>
+          {demoParticipantsEnabled && (
+            <View style={{ marginTop: 12, gap: 10 }}>
+              {/* Seed demo data */}
+              <TouchableOpacity onPress={doSeed} disabled={seedBusy} style={{ paddingVertical: 10, paddingHorizontal: 12, backgroundColor: '#222', borderRadius: 6, alignItems: 'center' }}>
+                <Text style={{ color: '#fff', fontWeight: '800' }}>{seedBusy ? 'Seeding…' : 'Seed Demo Data'}</Text>
               </TouchableOpacity>
-            ))}
-          </View>
 
-          {/* Wallet selector for Grant/Deduct */}
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-            <TouchableOpacity
-              onPress={() => setGWallet('skill')}
-              style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: gWallet === 'skill' ? '#FFB84D' : '#333', backgroundColor: gWallet === 'skill' ? '#2a200f' : '#1a1a1a' }}
-            >
-              <Text style={{ color: '#fff', fontWeight: '800' }}>Skill wallet</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setGWallet('dollars')}
-              style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: gWallet === 'dollars' ? '#7DFF70' : '#333', backgroundColor: gWallet === 'dollars' ? '#103014' : '#1a1a1a' }}
-            >
-              <Text style={{ color: '#fff', fontWeight: '800' }}>Dollars wallet</Text>
-            </TouchableOpacity>
-          </View>
+              {/* Load events and quick-pick */}
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <TouchableOpacity onPress={loadEventsIntoPicker} disabled={peLoading} style={{ paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#222', borderRadius: 6 }}>
+                  <Text style={{ color: '#fff' }}>{peLoading ? 'Loading…' : 'Load Events'}</Text>
+                </TouchableOpacity>
+                <Text style={{ color: '#aaa', fontSize: 12 }}>{peEvents.length ? `${peEvents.length} events` : 'No events yet'}</Text>
+              </View>
 
-          {/* Note */}
-          <View style={s.noteHeaderRow}>
-            <Text style={[s.meta, { marginTop: 10, marginBottom: 0 }]}>Note (optional)</Text>
-            {gNote ? (
-              <Pressable
-                onPress={() => setGNote('')}
-                hitSlop={8}
-                style={({ pressed }) => [s.clearChip, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={s.clearChipText}>Clear</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          <TextInput
-            style={s.input}
-            placeholder="e.g., refund / promo / manual adj"
-            placeholderTextColor={MUTED}
-            value={gNote}
-            onChangeText={setGNote}
-          />
-          {/* Actions */}
-          <View style={{ flexDirection:'row', gap:10 }}>
-            <TouchableOpacity disabled={gBusy} style={[s.btn, { flex:1 }, gBusy && s.btnDisabled]} onPress={doGrant}>
-              <Text style={s.btnText}>{gBusy ? 'Working…' : 'Grant'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity disabled={gBusy} style={[s.btnOutline, { flex:1 }, gBusy && s.btnDisabled]} onPress={doDeduct}>
-              <Text style={s.btnOutlineText}>{gBusy ? 'Working…' : 'Deduct'}</Text>
-            </TouchableOpacity>
-          </View>
+              {/* Event ID field */}
+              <Text style={{ color: '#ccc', marginTop: 4 }}>Event ID</Text>
+              <TextInput
+                placeholder="paste event id"
+                placeholderTextColor="#777"
+                value={peEventId}
+                onChangeText={setPeEventId}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
+              />
+              {!!peEvents.length && (
+                <Text style={{ color: '#888', fontSize: 12 }}>Hint: {peEvents[0]?.id} — {peEvents[0]?.name || ''}</Text>
+              )}
 
-          {/* History */}
-          <Text style={[s.cardTitle, { marginTop: 12 }]}>History</Text>
-          <TransactionList
-            variant="admin"
-            email={(gEmail || '').trim() || undefined}
-            embedded
-          />
+              {/* Quick-pick event ID buttons */}
+              {peEvents.length > 0 && (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                  {peEvents.slice(0, 5).map(e => (
+                    <TouchableOpacity key={e.id} onPress={() => setPeEventId(e.id)} style={{ borderColor: '#333', borderWidth: 1, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10 }}>
+                      <Text style={{ color: '#fff', fontSize: 12 }}>{e.name || 'Event'} · {e.id}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {/* Counts */}
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#9ecbff' }}>Teens</Text>
+                  <TextInput value={peTeen} onChangeText={setPeTeen} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#7DFF70' }}>Adults</Text>
+                  <TextInput value={peAdult} onChangeText={setPeAdult} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+                </View>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#FFB84D' }}>Pro</Text>
+                  <TextInput value={pePro} onChangeText={setPePro} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#FF6B6B' }}>Celebrity</Text>
+                  <TextInput value={peCeleb} onChangeText={setPeCeleb} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+                </View>
+              </View>
+
+              {/* Total spots */}
+              <Text style={{ color: '#ccc', marginTop: 4 }}>Total Spots</Text>
+              <TextInput value={peTotalSpots} onChangeText={setPeTotalSpots} keyboardType="number-pad" placeholder="100" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
+
+              <TouchableOpacity onPress={saveParticipants} disabled={peLoading || !peEventId} style={{ marginTop: 8, backgroundColor: '#FF6600', paddingVertical: 12, borderRadius: 6, alignItems: 'center' }}>
+                <Text style={{ color: '#000', fontWeight: '800' }}>{peLoading ? 'Saving…' : 'Save Participant Counts'}</Text>
+              </TouchableOpacity>
+
+              <Text style={{ color: '#888', fontSize: 12, marginTop: 6 }}>Demo-only tool – toggle off to hide. Remove this block later by searching for “Demo: Participant Editor”.</Text>
+            </View>
+          )}
         </View>
 
         {/* Submit Result */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Enter Drill Result</Text>
+        {/* Submit Result */}
+        <View onLayout={(e)=>setYResults(e.nativeEvent.layout.y)} style={s.card}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+            <Text style={s.cardTitle}>Enter Drill Result</Text>
+            <Pressable onPress={() => setOpenResults(v => !v)} hitSlop={8}>
+              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openResults ? 'Collapse' : 'Expand'}</Text>
+            </Pressable>
+          </View>
+          {openResults && (
+            <>
+              <Text style={s.meta}>Event ID</Text>
+              <AutoEventId value={rEventId} onChangeText={setREventId} placeholder="eventId (searchable)" style={s.input} />
 
-          <Text style={s.meta}>Event ID</Text>
-          <AutoEventId value={rEventId} onChangeText={setREventId} placeholder="eventId (searchable)" style={s.input} />
+              <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
+              <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
 
-          <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
-          <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
+              {/* Drill Type (dynamic) */}
+              <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
+              {availableDrills.length > 0 && (
+                <Text style={[s.meta, { marginTop: -4 }]}>
+                  Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
+                </Text>
+              )}
+              <View style={s.chipRow}>
+                {availableDrills.map(dt => {
+                  const selected = rDrill === dt;
+                  return (
+                    <TouchableOpacity
+                      key={dt}
+                      style={[s.drillChip, selected && s.drillChipActive]}
+                      onPress={() => setRDrill(dt)}
+                    >
+                      <Text style={[s.drillChipText, selected && s.drillChipTextActive]}>{dt}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <TextInput
+                style={s.input}
+                placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
+                placeholderTextColor={MUTED}
+                value={rDrill}
+                onChangeText={(t) => {
+                  const up = (t || '').toUpperCase();
+                  const match = availableDrills.find(d => d.startsWith(up));
+                  setRDrill(match || up);
+                }}
+                autoCapitalize="characters"
+              />
 
-          {/* Drill Type (dynamic) */}
-          <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
-          {availableDrills.length > 0 && (
-            <Text style={[s.meta, { marginTop: -4 }]}>
-              Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
-            </Text>
+              {/* Made / Attempts */}
+              <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
+                <Text style={s.smallLabel}>Made</Text>
+                <Text style={s.smallLabel}>Attempts</Text>
+              </View>
+              <View style={{ flexDirection:'row', gap:8 }}>
+                <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
+                <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
+              </View>
+
+              {/* Time */}
+              <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
+              <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
+                <Text style={s.timeLabel}>H</Text>
+                <Text style={s.timeLabel}>M</Text>
+                <Text style={s.timeLabel}>S</Text>
+                <Text style={s.timeLabel}>ms</Text>
+              </View>
+              <View style={s.timeRow}>
+                <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
+                <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
+                <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
+                <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
+              </View>
+
+              <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
+                <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
+              </TouchableOpacity>
+            </>
           )}
-          <View style={s.chipRow}>
-            {availableDrills.map(dt => {
-              const selected = rDrill === dt;
-              return (
-                <TouchableOpacity
-                  key={dt}
-                  style={[s.drillChip, selected && s.drillChipActive]}
-                  onPress={() => setRDrill(dt)}
-                >
-                  <Text style={[s.drillChipText, selected && s.drillChipTextActive]}>{dt}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          <TextInput
-            style={s.input}
-            placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
-            placeholderTextColor={MUTED}
-            value={rDrill}
-            onChangeText={(t) => {
-              const up = (t || '').toUpperCase();
-              const match = availableDrills.find(d => d.startsWith(up));
-              setRDrill(match || up);
-            }}
-            autoCapitalize="characters"
-          />
-
-          {/* Made / Attempts */}
-          <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
-            <Text style={s.smallLabel}>Made</Text>
-            <Text style={s.smallLabel}>Attempts</Text>
-          </View>
-          <View style={{ flexDirection:'row', gap:8 }}>
-            <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
-            <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
-          </View>
-
-          {/* Time */}
-          <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
-          <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
-            <Text style={s.timeLabel}>H</Text>
-            <Text style={s.timeLabel}>M</Text>
-            <Text style={s.timeLabel}>S</Text>
-            <Text style={s.timeLabel}>ms</Text>
-          </View>
-          <View style={s.timeRow}>
-            <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
-            <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
-            <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
-            <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
-          </View>
-
-          <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
-            <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
-          </TouchableOpacity>
         </View>
 
         {/* spacer so last control never hides behind keyboard */}
         <View style={{ height: 40 }} />
-
-     {/* -------- Demo: Participant Editor (toggleable) -------- */}
-     <View style={{ marginTop: 24, padding: 12, borderRadius: 8, backgroundColor: '#111', borderColor: '#333', borderWidth: 1 }}>
-       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-         <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>Demo: Participant Editor</Text>
-         <Switch value={demoParticipantsEnabled} onValueChange={setDemoParticipantsEnabled} />
-       </View>
-       {demoParticipantsEnabled && (
-         <View style={{ marginTop: 12, gap: 10 }}>
-           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-             <TouchableOpacity onPress={loadEventsIntoPicker} disabled={peLoading} style={{ paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#222', borderRadius: 6 }}>
-               <Text style={{ color: '#fff' }}>{peLoading ? 'Loading…' : 'Load Events'}</Text>
-             </TouchableOpacity>
-             <Text style={{ color: '#aaa', fontSize: 12 }}>{peEvents.length ? `${peEvents.length} events` : 'No events yet'}</Text>
-           </View>
-
-           {/* Event ID field (paste from /api/events) */}
-           <Text style={{ color: '#ccc', marginTop: 4 }}>Event ID</Text>
-           <TextInput
-             placeholder="paste event id"
-             placeholderTextColor="#777"
-             value={peEventId}
-             onChangeText={setPeEventId}
-             autoCapitalize="none"
-             autoCorrect={false}
-             style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }}
-           />
-           {!!peEvents.length && (
-             <Text style={{ color: '#888', fontSize: 12 }}>Hint: {peEvents[0]?.id} — {peEvents[0]?.name || ''}</Text>
-           )}
-           {/* Quick-pick event ID buttons */}
-           {peEvents.length > 0 && (
-             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
-               {peEvents.slice(0, 5).map(e => (
-                 <TouchableOpacity key={e.id} onPress={() => setPeEventId(e.id)} style={{ borderColor: '#333', borderWidth: 1, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10 }}>
-                   <Text style={{ color: '#fff', fontSize: 12 }}>{e.name || 'Event'} · {e.id}</Text>
-                 </TouchableOpacity>
-               ))}
-             </View>
-           )}
-
-           {/* Counts */}
-           <View style={{ flexDirection: 'row', gap: 8 }}>
-             <View style={{ flex: 1 }}>
-               <Text style={{ color: '#9ecbff' }}>Teens</Text>
-               <TextInput value={peTeen} onChangeText={setPeTeen} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
-             </View>
-             <View style={{ flex: 1 }}>
-               <Text style={{ color: '#7DFF70' }}>Adults</Text>
-               <TextInput value={peAdult} onChangeText={setPeAdult} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
-             </View>
-           </View>
-           <View style={{ flexDirection: 'row', gap: 8 }}>
-             <View style={{ flex: 1 }}>
-               <Text style={{ color: '#FFB84D' }}>Pro</Text>
-               <TextInput value={pePro} onChangeText={setPePro} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
-             </View>
-             <View style={{ flex: 1 }}>
-               <Text style={{ color: '#FF6B6B' }}>Celebrity</Text>
-               <TextInput value={peCeleb} onChangeText={setPeCeleb} keyboardType="number-pad" placeholder="0" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
-             </View>
-           </View>
-
-           {/* Total spots */}
-           <Text style={{ color: '#ccc', marginTop: 4 }}>Total Spots</Text>
-           <TextInput value={peTotalSpots} onChangeText={setPeTotalSpots} keyboardType="number-pad" placeholder="100" placeholderTextColor="#666" style={{ color: '#fff', borderColor: '#333', borderWidth: 1, borderRadius: 6, padding: 10 }} />
-
-           <TouchableOpacity onPress={saveParticipants} disabled={peLoading || !peEventId} style={{ marginTop: 8, backgroundColor: '#FF6600', paddingVertical: 12, borderRadius: 6, alignItems: 'center' }}>
-             <Text style={{ color: '#000', fontWeight: '800' }}>{peLoading ? 'Saving…' : 'Save Participant Counts'}</Text>
-           </TouchableOpacity>
-
-           <Text style={{ color: '#888', fontSize: 12, marginTop: 6 }}>Demo-only tool – toggle off to hide. Remove this block later by searching for “Demo: Participant Editor”.</Text>
-         </View>
-       )}
-     </View>   
       </ScrollView>
     </KeyboardAvoidingView>
   );
