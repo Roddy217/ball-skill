@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Pressable,
   TextInput,
+  ScrollView,
 } from 'react-native';
 import colors from '../theme/colors';
 
@@ -30,14 +31,15 @@ type Tx = {
 type Variant = 'user' | 'admin';
 
 type Props = {
-    variant: Variant;
-    email?: string;                // required for variant='user'
-    pageSize?: number;
-    style?: any;
-    onReversed?: (id: string) => void; // admin only
-    embedded?: boolean;            // when true, disable inner scrolling (use inside outer ScrollView)
-    showFilters?: boolean;         // show wallet/search filters (optional)
-  };
+  variant: Variant;
+  email?: string;                // required for variant='user'
+  pageSize?: number;
+  style?: any;
+  onReversed?: (id: string) => void; // admin only
+  embedded?: boolean;            // when true, disable inner scrolling (use inside outer ScrollView)
+  showFilters?: boolean;         // show wallet/search filters (optional)
+  embeddedMaxHeight?: number;    // max height for embedded scroll (default 420)
+};
 
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/, '');
 const API = `${SERVER}/api`;
@@ -61,14 +63,15 @@ function Pill({ text, bg, fg }: { text: string; bg: string; fg: string }) {
 }
 
 export default function TransactionList({
-    email,
-    variant = 'user',
-    pageSize = 50,
-    embedded = false,
-    showFilters = true,
-    style,
-    onReversed,
-  }: Props) {
+  email,
+  variant = 'user',
+  pageSize = 50,
+  embedded = false,
+  showFilters = true,
+  style,
+  onReversed,
+  embeddedMaxHeight = 420,
+}: Props) {
 
   const [items, setItems] = useState<Tx[]>([]);
   const [total, setTotal] = useState<number>(0);
@@ -79,6 +82,18 @@ export default function TransactionList({
   // ----- Filters (client-side) -----
   const [walletFilter, setWalletFilter] = useState<'all'|'skill'|'dollars'>('all');
   const [q, setQ] = useState('');
+
+  // date window: all | 7d | 30d | 90d
+const [dateRange, setDateRange] = useState<'all'|'7d'|'30d'|'90d'>('all');
+const sinceMs = useMemo(() => {
+  const now = Date.now();
+  switch (dateRange) {
+    case '7d':  return now - 7  * 24 * 60 * 60 * 1000;
+    case '30d': return now - 30 * 24 * 60 * 60 * 1000;
+    case '90d': return now - 90 * 24 * 60 * 60 * 1000;
+    default:    return 0; // 'all'
+  }
+}, [dateRange]);
 
   // simple debounce for search input
   const qRef = useRef<any>();
@@ -110,6 +125,14 @@ export default function TransactionList({
           offset: String(reset ? 0 : offset),
           sort: 'desc',
         });
+        // pass filters to the server if present
+        if (walletFilter !== 'all') q.set('wallet', walletFilter);
+        if (qLive.trim()) q.set('q', qLive.trim());
+        // date range to server
+        if (sinceMs) {
+            q.set('since', String(sinceMs));
+            q.set('until', String(Date.now()));
+        }
         const res = await fetch(`${endpoint}?${q.toString()}`);
         const data = await res.json();
         if (!data?.success) throw new Error('failed');
@@ -124,12 +147,12 @@ export default function TransactionList({
         if (opts?.reset) setLoading(false);
       }
     },
-    [endpoint, pageSize, offset, items]
+    [endpoint, pageSize, offset, items, walletFilter, qLive, sinceMs]
   );
 
   useEffect(() => {
     load({ reset: true });
-  }, [endpoint]);
+  }, [endpoint, walletFilter, qLive, sinceMs]);
 
   const refresh = useCallback(async () => {
     try {
@@ -145,6 +168,9 @@ export default function TransactionList({
   // Derive filtered items for wallet + query
   const filtered = useMemo(() => {
     let a = items;
+    if (sinceMs) {
+        a = a.filter(it => Number(it.ts || 0) >= sinceMs && Number(it.ts || 0) < Date.now());
+      }
     if (walletFilter !== 'all') {
       a = a.filter(it => (it.wallet || '').toLowerCase() === walletFilter);
     }
@@ -186,6 +212,30 @@ export default function TransactionList({
           );
         })}
       </View>
+      {/* date-range chips */}
+    <View style={{ flexDirection:'row', gap:8, flexWrap:'wrap', marginBottom: 8 }}>
+    {([
+        {k:'all', label:'All'},
+        {k:'7d', label:'Last 7 days'},
+        {k:'30d', label:'Last 30 days'},
+        {k:'90d', label:'Last 90 days'},
+    ] as const).map(opt => {
+        const active = dateRange === opt.k;
+        return (
+        <Pressable
+            key={opt.k}
+            onPress={() => setDateRange(opt.k)}
+            style={({pressed}) => [
+            { borderWidth:1, borderRadius:999, paddingVertical:6, paddingHorizontal:10, borderColor:'#2a2a2a', backgroundColor:'#0b0b0b' },
+            active && { backgroundColor:'#FF6600', borderColor:'#FF6600' },
+            pressed && { opacity: 0.85 }
+            ]}
+        >
+            <Text style={{ color: active ? '#000' : '#fff', fontWeight:'800', fontSize:12 }}>{opt.label}</Text>
+        </Pressable>
+        );
+    })}
+    </View>
       {/* search input */}
       <TextInput
         value={q}
@@ -278,48 +328,61 @@ export default function TransactionList({
     );
   }
 
-  if (!items.length) {
-    return (
-      <View style={[s.box, style]}>
-        <Text style={s.empty}>No transactions yet.</Text>
-      </View>
-    );
-  }
 
   if (embedded) {
     return (
-      <View style={[s.box, style]}>
-        {/* Top-right refresh button to replace pull-to-refresh when embedded */}
-        <View style={{ alignItems: 'flex-end', marginBottom: 8 }}>
-          <Pressable
-            onPress={refresh}
-            hitSlop={8}
-            style={({ pressed }) => [
-              { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
-              pressed && { opacity: 0.85 },
-            ]}
+      <View style={[s.box, style]}>        
+        <View style={{ maxHeight: embeddedMaxHeight, borderRadius: 12, overflow: 'hidden' }}>
+          <ScrollView
+            stickyHeaderIndices={[0]} // header index 0 sticks: contains Refresh + filters
+            contentContainerStyle={{ paddingBottom: 12 }}
           >
-            {refreshing ? (
-              <ActivityIndicator color="#fff" />
+            {/* Sticky header */}
+            <View style={{ backgroundColor: '#0b0b0b', paddingTop: 6, paddingBottom: 8 }}>
+              {/* Top-right refresh button */}
+              <View style={{ alignItems: 'flex-end', marginBottom: 8, paddingHorizontal: 4 }}>
+                <Pressable
+                  onPress={refresh}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  {refreshing ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={{ color: '#fff', fontWeight: '700' }}>Refresh</Text>
+                  )}
+                </Pressable>
+              </View>
+              {filtersUI}
+            </View>
+
+            {/* Body */}
+            {filtered.length === 0 ? (
+              <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                <Text style={{ color: '#9a9a9a' }}>
+                  {items.length ? 'No matches for current filters.' : 'No transactions yet.'}
+                </Text>
+              </View>
             ) : (
-              <Text style={{ color: '#fff', fontWeight: '700' }}>Refresh</Text>
+              <View style={{ paddingHorizontal: 0 }}>
+                {filtered.map((it, idx) => (
+                  <View key={it.id || String(idx)}>{renderRow(it, idx)}</View>
+                ))}
+
+                {hasMore ? (
+                  <View style={{ paddingVertical: 12, alignItems: 'center' }}>
+                    <Pressable onPress={() => load()} style={({ pressed }) => [s.moreBtn, pressed && { opacity: 0.9 }] }>
+                      <Text style={s.moreText}>Load more</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
             )}
-          </Pressable>
+          </ScrollView>
         </View>
-
-        {filtersUI}
-
-        {filtered.map((it, idx) => (
-          <View key={it.id || String(idx)}>{renderRow(it, idx)}</View>
-        ))}
-
-        {hasMore ? (
-          <View style={{ paddingVertical: 12, alignItems: 'center' }}>
-            <Pressable onPress={() => load()} style={({ pressed }) => [s.moreBtn, pressed && { opacity: 0.9 }]}>
-              <Text style={s.moreText}>Load more</Text>
-            </Pressable>
-          </View>
-        ) : null}
       </View>
     );
   }
@@ -329,6 +392,7 @@ export default function TransactionList({
     <FlatList
       contentContainerStyle={[s.box, style]}
       ListHeaderComponent={filtersUI}
+      stickyHeaderIndices={[0]}
       data={filtered}
       keyExtractor={(it) => it.id}
       renderItem={renderItem}
@@ -345,6 +409,11 @@ export default function TransactionList({
           </View>
         ) : null
       }
+      ListEmptyComponent={() => (
+        <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+          <Text style={{ color: '#9a9a9a' }}>No matches for current filters.</Text>
+        </View>
+      )}
     />
   );
 }

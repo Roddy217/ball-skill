@@ -476,16 +476,17 @@ app.get('/api/transactions', (req, res) => {
     const wallet = String(req.query.wallet || '').toLowerCase(); // 'skill' | 'dollars' | ''
     const q = String(req.query.q || '').toLowerCase();
     const sort = (req.query.sort || 'desc') === 'asc' ? 'asc' : 'desc';
+    const since = Number(req.query.since || 0);           // unix ms
+    const until = Number(req.query.until || Date.now());  // unix ms
 
-    // base list
-    let list = txLog.slice(); // txLog: [{ id, ts, email, delta, wallet, note, balanceAfter, walletBalanceAfter, actor, meta }, ...]
+    console.log('[tx:list]', req.path, { wallet, q, since, until, limit, offset, sort });
 
-    // filter by wallet if provided
+    let list = txLog.slice();
+
     if (wallet === 'skill' || wallet === 'dollars') {
       list = list.filter(t => String(t.wallet || '').toLowerCase() === wallet);
     }
 
-    // free-text search on note/email/id
     if (q) {
       list = list.filter(t => {
         const note = String(t.note || '').toLowerCase();
@@ -495,13 +496,21 @@ app.get('/api/transactions', (req, res) => {
       });
     }
 
-    // sort by timestamp
+    // date window (inclusive since, exclusive until)
+    if (since || until) {
+      list = list.filter(t => {
+        const ts = Number(t.ts || 0);
+        return ts >= (since || 0) && ts < (until || Number.MAX_SAFE_INTEGER);
+      });
+    }
+
     list.sort((a, b) => sort === 'asc' ? (a.ts - b.ts) : (b.ts - a.ts));
 
     const total = list.length;
     const items = list.slice(offset, offset + limit);
     res.json({ success: true, total, items });
   } catch (e) {
+    console.error('[tx:list] error', e);
     res.status(500).json({ success: false, error: 'server_error' });
   }
 });
@@ -512,9 +521,13 @@ app.get('/api/transactions/:email', (req, res) => {
     const email = String((req.params.email || '').toLowerCase());
     const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 50));
     const offset = Math.max(0, Number(req.query.offset) || 0);
-    const wallet = String(req.query.wallet || '').toLowerCase(); // 'skill' | 'dollars' | ''
+    const wallet = String(req.query.wallet || '').toLowerCase();
     const q = String(req.query.q || '').toLowerCase();
     const sort = (req.query.sort || 'desc') === 'asc' ? 'asc' : 'desc';
+    const since = Number(req.query.since || 0);
+    const until = Number(req.query.until || Date.now());
+
+    console.log('[tx:user]', req.path, { email, wallet, q, since, until, limit, offset, sort });
 
     let list = txLog.filter(t => String(t.email || '').toLowerCase() === email);
 
@@ -530,12 +543,20 @@ app.get('/api/transactions/:email', (req, res) => {
       });
     }
 
+    if (since || until) {
+      list = list.filter(t => {
+        const ts = Number(t.ts || 0);
+        return ts >= (since || 0) && ts < (until || Number.MAX_SAFE_INTEGER);
+      });
+    }
+
     list.sort((a, b) => sort === 'asc' ? (a.ts - b.ts) : (b.ts - a.ts));
 
     const total = list.length;
     const items = list.slice(offset, offset + limit);
     res.json({ success: true, total, items });
   } catch (e) {
+    console.error('[tx:user] error', e);
     res.status(500).json({ success: false, error: 'server_error' });
   }
 });
