@@ -1,16 +1,18 @@
 // components/TransactionList.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  ActivityIndicator,
-  RefreshControl,
-  Pressable,
-  TextInput,
-  ScrollView,
-} from 'react-native';
+    View,
+    Text,
+    StyleSheet,
+    FlatList,
+    ActivityIndicator,
+    RefreshControl,
+    Pressable,
+    TextInput,
+    ScrollView,
+    Linking,
+  } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import colors from '../theme/colors';
 
 type Wallet = 'skill' | 'dollars';
@@ -53,6 +55,40 @@ function money(c: number) {
   const v = Math.abs(c) / 100;
   return `$${v.toFixed(2)}`;
 }
+
+// --- CSV helpers ---
+function csvEscape(v: any) {
+    const s = String(v ?? '');
+    if (s.includes('"') || s.includes(',') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  }
+  function toIso(ts: number) {
+    try { return new Date(Number(ts)).toISOString(); } catch { return ''; }
+  }
+  function txToCsvRow(t: Tx) {
+    // header: ts_iso, email, wallet, delta_cents, delta_display, note, walletAfter_cents, combinedAfter_cents, id, actor
+    return [
+      toIso(t.ts),
+      t.email || '',
+      t.wallet || '',
+      String(t.delta ?? ''),
+      cents(t.delta ?? 0),
+      (t.note ?? '').toString(),
+      String(t.walletBalanceAfter ?? ''),
+      String(typeof t.balanceAfter === 'number' ? t.balanceAfter : ''),
+      t.id || '',
+      t.actor || '',
+    ].map(csvEscape).join(',');
+  }
+  function buildCsv(rows: Tx[]) {
+    const header = [
+      'ts_iso','email','wallet','delta_cents','delta_display','note',
+      'walletAfter_cents','combinedAfter_cents','id','actor'
+    ].join(',');
+    return [header, ...rows.map(txToCsvRow)].join('\n');
+  }
 
 function Pill({ text, bg, fg }: { text: string; bg: string; fg: string }) {
   return (
@@ -150,6 +186,74 @@ const sinceMs = useMemo(() => {
     [endpoint, pageSize, offset, items, walletFilter, qLive, sinceMs]
   );
 
+    // Fetch all pages using current filters to export
+    const fetchAllForExport = useCallback(async (): Promise<Tx[]> => {
+        let acc: Tx[] = [];
+        let off = 0;
+        const step = Math.max(1, Math.min(pageSize, 500)); // respect pageSize; cap 500
+        for (let guard = 0; guard < 100; guard++) { // safety cap
+        const qs = new URLSearchParams({
+            limit: String(step),
+            offset: String(off),
+            sort: 'desc',
+        });
+        if (walletFilter !== 'all') qs.set('wallet', walletFilter);
+        if (qLive.trim()) qs.set('q', qLive.trim());
+        if (sinceMs) {
+            qs.set('since', String(sinceMs));
+            qs.set('until', String(Date.now()));
+        }
+        const res = await fetch(`${endpoint}?${qs.toString()}`);
+        const data = await res.json();
+        if (!data?.success) break;
+        const page: Tx[] = data.items || [];
+        acc = acc.concat(page);
+        off += step;
+        if (!page.length || acc.length >= Number(data.total || 0)) break;
+        }
+        return acc;
+    }, [endpoint, pageSize, walletFilter, qLive, sinceMs]);
+    
+    const [exporting, setExporting] = useState(false);
+    
+    const onExportCsv = useCallback(async () => {
+        try {
+        setExporting(true);
+        // Prefer server-side filtered export of ALL rows matching current view
+        const rows = await fetchAllForExport();
+        const csv = buildCsv(rows);
+        // Try email compose via mailto:
+        const subject = 'Ball Skill — Transactions Export';
+        const body = encodeURIComponent(csv);
+        const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${body}`;
+        const can = await Linking.canOpenURL(mailto);
+        if (can) {
+            await Linking.openURL(mailto);
+            return;
+        }
+        // Fallback: copy to clipboard
+        await Clipboard.setStringAsync(csv);
+        // Optionally: toast/snackbar; for now, a no-op
+        } catch (e) {
+        // swallow
+        } finally {
+        setExporting(false);
+        }
+    }, [fetchAllForExport]);
+    
+    const onCopyCsv = useCallback(async () => {
+        try {
+        setExporting(true);
+        const rows = await fetchAllForExport();
+        const csv = buildCsv(rows);
+        await Clipboard.setStringAsync(csv);
+        } catch (e) {
+        // noop
+        } finally {
+        setExporting(false);
+        }
+    }, [fetchAllForExport]);
+
   useEffect(() => {
     load({ reset: true });
   }, [endpoint, walletFilter, qLive, sinceMs]);
@@ -246,6 +350,22 @@ const sinceMs = useMemo(() => {
         autoCapitalize="none"
         autoCorrect={false}
       />
+      {q.length > 0 && (
+        <View style={{ marginTop: 6, alignItems: 'flex-end' }}>
+          <Pressable
+            onPress={() => setQ('')}
+            hitSlop={8}
+            style={({ pressed }) => [
+              { borderWidth: 1, borderColor: '#444', borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, backgroundColor: '#0b0b0b' },
+              pressed && { opacity: 0.85 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 12 }}>Clear</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   ) : null;
 
@@ -331,31 +451,15 @@ const sinceMs = useMemo(() => {
 
   if (embedded) {
     return (
-      <View style={[s.box, style]}>        
+      <View style={[s.box, style]}>
         <View style={{ maxHeight: embeddedMaxHeight, borderRadius: 12, overflow: 'hidden' }}>
           <ScrollView
-            stickyHeaderIndices={[0]} // header index 0 sticks: contains Refresh + filters
+            stickyHeaderIndices={[0]}
             contentContainerStyle={{ paddingBottom: 12 }}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#fff" />}
           >
-            {/* Sticky header */}
-            <View style={{ backgroundColor: '#0b0b0b', paddingTop: 6, paddingBottom: 8 }}>
-              {/* Top-right refresh button */}
-              <View style={{ alignItems: 'flex-end', marginBottom: 8, paddingHorizontal: 4 }}>
-                <Pressable
-                  onPress={refresh}
-                  hitSlop={8}
-                  style={({ pressed }) => [
-                    { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
-                    pressed && { opacity: 0.85 },
-                  ]}
-                >
-                  {refreshing ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={{ color: '#fff', fontWeight: '700' }}>Refresh</Text>
-                  )}
-                </Pressable>
-              </View>
+            {/* Sticky header: only filters so it stays compact */}
+            <View style={{ backgroundColor: '#0b0b0b' }}>
               {filtersUI}
             </View>
 
@@ -379,6 +483,53 @@ const sinceMs = useMemo(() => {
                     </Pressable>
                   </View>
                 ) : null}
+                {/* Non-sticky footer actions (won't block rows) */}
+                <View style={{ paddingTop: 8, flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+                  {variant === 'admin' && (
+                    <>
+                      <Pressable
+                        onPress={onCopyCsv}
+                        disabled={exporting}
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, backgroundColor: '#0b0b0b' },
+                          pressed && { opacity: 0.85 },
+                        ]}
+                      >
+                        <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>
+                          {exporting ? 'Copying…' : 'Copy CSV'}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={onExportCsv}
+                        disabled={exporting}
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, backgroundColor: '#0b0b0b' },
+                          pressed && { opacity: 0.85 },
+                        ]}
+                      >
+                        <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>
+                          {exporting ? 'Exporting…' : 'Export CSV'}
+                        </Text>
+                      </Pressable>
+                    </>
+                  )}
+                  <Pressable
+                    onPress={refresh}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    {refreshing ? (
+                      <ActivityIndicator color="#fff" />)
+                      : (
+                      <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>Refresh</Text>
+                    )}
+                  </Pressable>
+                </View>
               </View>
             )}
           </ScrollView>
@@ -391,7 +542,11 @@ const sinceMs = useMemo(() => {
   return (
     <FlatList
       contentContainerStyle={[s.box, style]}
-      ListHeaderComponent={filtersUI}
+      ListHeaderComponent={() => (
+        <View>
+          {filtersUI}
+        </View>
+      )}
       stickyHeaderIndices={[0]}
       data={filtered}
       keyExtractor={(it) => it.id}
@@ -400,15 +555,63 @@ const sinceMs = useMemo(() => {
       initialNumToRender={12}
       windowSize={11}
       removeClippedSubviews
-      ListFooterComponent={() =>
-        hasMore ? (
-          <View style={{ paddingVertical: 12, alignItems: 'center' }}>
-            <Pressable onPress={() => load()} style={({ pressed }) => [s.moreBtn, pressed && { opacity: 0.9 }]}>
-              <Text style={s.moreText}>Load more</Text>
+      ListFooterComponent={() => (
+        <View style={{ paddingVertical: 12 }}>
+          {hasMore ? (
+            <View style={{ alignItems: 'center', marginBottom: 8 }}>
+              <Pressable onPress={() => load()} style={({ pressed }) => [s.moreBtn, pressed && { opacity: 0.9 }]}>
+                <Text style={s.moreText}>Load more</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+            {variant === 'admin' && (
+              <>
+                <Pressable
+                  onPress={onCopyCsv}
+                  disabled={exporting}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, backgroundColor: '#0b0b0b' },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>
+                    {exporting ? 'Copying…' : 'Copy CSV'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={onExportCsv}
+                  disabled={exporting}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, backgroundColor: '#0b0b0b' },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>
+                    {exporting ? 'Exporting…' : 'Export CSV'}
+                  </Text>
+                </Pressable>
+              </>
+            )}
+            <Pressable
+              onPress={refresh}
+              hitSlop={8}
+              style={({ pressed }) => [
+                { borderColor: '#444', borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              {refreshing ? (
+                <ActivityIndicator color="#fff" />)
+                : (
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>Refresh</Text>
+              )}
             </Pressable>
           </View>
-        ) : null
-      }
+        </View>
+      )}
       ListEmptyComponent={() => (
         <View style={{ paddingVertical: 24, alignItems: 'center' }}>
           <Text style={{ color: '#9a9a9a' }}>No matches for current filters.</Text>
