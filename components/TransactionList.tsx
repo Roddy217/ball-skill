@@ -1,5 +1,5 @@
 // components/TransactionList.tsx
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Pressable,
+  TextInput,
 } from 'react-native';
 import colors from '../theme/colors';
 
@@ -29,13 +30,14 @@ type Tx = {
 type Variant = 'user' | 'admin';
 
 type Props = {
-  variant: Variant;
-  email?: string;                // required for variant='user'
-  pageSize?: number;
-  style?: any;
-  onReversed?: (id: string) => void; // admin only
-  embedded?: boolean;            // when true, disable inner scrolling (use inside outer ScrollView)
-};
+    variant: Variant;
+    email?: string;                // required for variant='user'
+    pageSize?: number;
+    style?: any;
+    onReversed?: (id: string) => void; // admin only
+    embedded?: boolean;            // when true, disable inner scrolling (use inside outer ScrollView)
+    showFilters?: boolean;         // show wallet/search filters (optional)
+  };
 
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/, '');
 const API = `${SERVER}/api`;
@@ -58,12 +60,34 @@ function Pill({ text, bg, fg }: { text: string; bg: string; fg: string }) {
   );
 }
 
-export default function TransactionList({ variant, email, pageSize = 25, style, onReversed, embedded = false }: Props) {
+export default function TransactionList({
+    email,
+    variant = 'user',
+    pageSize = 50,
+    embedded = false,
+    showFilters = true,
+    style,
+    onReversed,
+  }: Props) {
+
   const [items, setItems] = useState<Tx[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [offset, setOffset] = useState<number>(0);
+
+  // ----- Filters (client-side) -----
+  const [walletFilter, setWalletFilter] = useState<'all'|'skill'|'dollars'>('all');
+  const [q, setQ] = useState('');
+
+  // simple debounce for search input
+  const qRef = useRef<any>();
+  const [qLive, setQLive] = useState('');
+  useEffect(() => {
+    if (qRef.current) clearTimeout(qRef.current);
+    qRef.current = setTimeout(() => setQLive(q), 300);
+    return () => { if (qRef.current) clearTimeout(qRef.current); };
+  }, [q]);
 
   const endpoint = useMemo(() => {
     if (variant === 'user') {
@@ -117,6 +141,63 @@ export default function TransactionList({ variant, email, pageSize = 25, style, 
   }, [load]);
 
   const hasMore = items.length < total;
+
+  // Derive filtered items for wallet + query
+  const filtered = useMemo(() => {
+    let a = items;
+    if (walletFilter !== 'all') {
+      a = a.filter(it => (it.wallet || '').toLowerCase() === walletFilter);
+    }
+    if (qLive.trim()) {
+      const needle = qLive.trim().toLowerCase();
+      a = a.filter(it => {
+        const note = String(it.note || '').toLowerCase();
+        const emailStr = String(it.email || '').toLowerCase();
+        const idStr = String(it.id || '').toLowerCase();
+        return note.includes(needle) || emailStr.includes(needle) || idStr.includes(needle);
+      });
+    }
+    return a;
+  }, [items, walletFilter, qLive]);
+
+  // Reusable filters UI block
+  const filtersUI = showFilters ? (
+    <View style={{ marginBottom: 8 }}>
+      {/* wallet chips */}
+      <View style={{ flexDirection:'row', gap:8, flexWrap:'wrap', marginBottom: 8 }}>
+        {([
+          {k:'all', label:'All'},
+          {k:'skill', label:'Skill'},
+          {k:'dollars', label:'Dollars'}
+        ] as const).map(opt => {
+          const active = walletFilter === opt.k;
+          return (
+            <Pressable
+              key={opt.k}
+              onPress={() => setWalletFilter(opt.k)}
+              style={({pressed}) => [
+                { borderWidth:1, borderRadius:999, paddingVertical:6, paddingHorizontal:10, borderColor:'#2a2a2a', backgroundColor:'#0b0b0b' },
+                active && { backgroundColor:'#FF6600', borderColor:'#FF6600' },
+                pressed && { opacity: 0.85 }
+              ]}
+            >
+              <Text style={{ color: active ? '#000' : '#fff', fontWeight:'800', fontSize:12 }}>{opt.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {/* search input */}
+      <TextInput
+        value={q}
+        onChangeText={setQ}
+        placeholder={variant === 'admin' ? 'Search note / email / tx id' : 'Search note / id'}
+        placeholderTextColor="#777"
+        style={{ color:'#fff', borderColor:'#1e1e1e', borderWidth:1, borderRadius:8, paddingHorizontal:12, paddingVertical:8 }}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+    </View>
+  ) : null;
 
   const renderItem = ({ item }: { item: Tx }) => {
     const isCredit = item.delta > 0;
@@ -226,7 +307,9 @@ export default function TransactionList({ variant, email, pageSize = 25, style, 
           </Pressable>
         </View>
 
-        {items.map((it, idx) => (
+        {filtersUI}
+
+        {filtered.map((it, idx) => (
           <View key={it.id || String(idx)}>{renderRow(it, idx)}</View>
         ))}
 
@@ -245,7 +328,8 @@ export default function TransactionList({ variant, email, pageSize = 25, style, 
   return (
     <FlatList
       contentContainerStyle={[s.box, style]}
-      data={items}
+      ListHeaderComponent={filtersUI}
+      data={filtered}
       keyExtractor={(it) => it.id}
       renderItem={renderItem}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#fff" />}
