@@ -1,6 +1,5 @@
 import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { View, Text, ScrollView, TextInput, Switch, TouchableOpacity, StyleSheet, FlatList, Pressable, ActivityIndicator, Alert } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
 import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
@@ -30,6 +29,7 @@ type EventItem = {
 };
 
 type SortFilter =
+
   | 'ALL'
   | 'SOONEST'
   | 'NEWEST'
@@ -38,6 +38,20 @@ type SortFilter =
   | 'PRICE_ASC'
   | 'PRICE_DESC'
   | 'JOINED';
+
+  type TimeFilter = 'ANY' | 'SOON' | 'TODAY' | 'WEEK' | 'MONTH' | 'LIVE';
+
+type NormalizedItem = {
+  id: string;
+  title: string;
+  startTs: number;
+  dateLabel: string;
+  locationType: 'in_person' | 'online';
+  venue?: string;
+  feeCents: number;            // unifies fee
+  isLive: boolean;             // server-backed event
+  raw?: any;                   // original server event when isLive = true
+};
 
 const baseSeed: EventItem[] = [
   { id: 'evt_001', title: 'Ball Skill Combine', date: 'Sat, Sep 20 • 10:00 AM', startTs: new Date('2025-09-20T10:00:00-04:00').getTime(), locationType: 'in_person', venue: 'Hoop City Gym', fee: 10, spotsLeft: 8, drills: ['3PT','Midrange','Handles'] },
@@ -350,6 +364,16 @@ export default function EventsScreen() {
   const hasEmail = !!(user && !user.isAnonymous && user.email);
   const userEmail = email; // ensure the variable used below actually exists
   const [filter, setFilter] = useState<SortFilter>('SOONEST');
+
+  const [search, setSearch] = useState<string>('');
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('ANY');
+
+  const clearFilters = useCallback(() => {
+    setSearch('');
+    setTimeFilter('ANY');
+    setFilter('ALL');
+    setPage(1);
+  }, []);
   const [showDemo, setShowDemo] = useState<boolean>(true);
   const [apiBase, setApiBaseState] = useState<string>('');
   const [balance, setBalance] = useState<string | null>(null)
@@ -381,54 +405,6 @@ export default function EventsScreen() {
   // Per-event wallet choice for joining live events
   const [joinWalletByEvent, setJoinWalletByEvent] = useState<Record<string, 'skill'|'dollars'>>({});
   const getJoinWallet = useCallback((id: string) => joinWalletByEvent[id] || 'dollars', [joinWalletByEvent]);
-
-  // Demo wallet simulation (local-only offsets applied to Earnings screen when enabled)
-  const [demoSimEnabled, setDemoSimEnabled] = useState<boolean>(false);
-  // Displayed offsets (in cents) for current user when demo sim is ON
-  const [demoOffsets, setDemoOffsets] = useState<{ skill: number; dollars: number }>({ skill: 0, dollars: 0 });
-  const fmtMoney = useCallback((c: number) => `${c < 0 ? '-' : ''}$${(Math.abs(c) / 100).toFixed(2)}` , []);
-
-  const DEMO_SIM_KEY = 'demoSimEnabled';
-  const DEMO_OFFSETS_KEY = (email: string) => `demoWalletOffsets:${email}`;
-
-  const loadDemoSim = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(DEMO_SIM_KEY);
-      setDemoSimEnabled(raw === '1');
-    } catch {}
-  }, []);
-
-  const saveDemoSim = useCallback(async (on: boolean) => {
-    setDemoSimEnabled(on);
-    try { await AsyncStorage.setItem(DEMO_SIM_KEY, on ? '1' : '0'); } catch {}
-  }, []);
-
-  const loadDemoOffsets = useCallback(async (email: string) => {
-    if (!email) return { skill: 0, dollars: 0 };
-    try {
-      const raw = await AsyncStorage.getItem(DEMO_OFFSETS_KEY(email));
-      if (!raw) return { skill: 0, dollars: 0 };
-      const o = JSON.parse(raw);
-      return { skill: Number(o?.skill||0), dollars: Number(o?.dollars||0) };
-    } catch { return { skill: 0, dollars: 0 }; }
-  }, []);
-
-  const saveDemoOffsets = useCallback(async (email: string, offsets: { skill: number; dollars: number }) => {
-    if (!email) return;
-    try { await AsyncStorage.setItem(DEMO_OFFSETS_KEY(email), JSON.stringify(offsets)); } catch {}
-  }, []);
-
-  const resetDemoOffsets = useCallback(async (email: string) => {
-    if (!email) return;
-    try {
-      const zeros = { skill: 0, dollars: 0 };
-      await saveDemoOffsets(email, zeros);
-      setDemoOffsets(zeros);
-      Alert.alert('Demo offsets reset', 'Local demo wallet adjustments cleared for this user.');
-    } catch (e) {
-      Alert.alert('Reset failed', 'Could not clear demo offsets.');
-    }
-  }, [saveDemoOffsets]);
 
   // --- Demo: Participant Editor toggle + fields ---
   const [demoParticipantsEnabled, setDemoParticipantsEnabled] = useState(false);
@@ -552,18 +528,6 @@ export default function EventsScreen() {
       setApiBaseState(getApiBase());
     })();
   }, []);
-
-  // Load demo simulation flag on mount
-  useEffect(() => { loadDemoSim(); }, [loadDemoSim]);
-
-  // Load current offsets when demo sim toggles or user changes
-  useEffect(() => {
-    (async () => {
-      if (!hasEmail) { setDemoOffsets({ skill: 0, dollars: 0 }); return; }
-      const off = await loadDemoOffsets(userEmail);
-      setDemoOffsets(off);
-    })();
-  }, [demoSimEnabled, hasEmail, userEmail, loadDemoOffsets]);
 
   /// Also refresh API base whenever this screen gains focus (after Admin Save)
   useFocusEffect(
@@ -704,14 +668,7 @@ useFocusEffect(
       });
       Alert.alert('Joined (Demo)', `Wallet picked: ${chosen}  •  Fee: $${Math.abs(Number(evt.fee) || 0).toFixed(2)}\n(Local demo only; no wallet deducted)`);
       // When enabled, simulate real wallet deduction locally (in cents)
-      if (demoSimEnabled) {
-        const feeCents = Math.round((Number(evt.fee)||0) * 100);
-        const current = await loadDemoOffsets(userEmail);
-        const w = chosen === 'skill' ? 'skill' : 'dollars';
-        const next = { ...current, [w]: Number(current[w]||0) - feeCents };
-        await saveDemoOffsets(userEmail, next);
-        setDemoOffsets(next);
-      }
+    
     } catch (e: any) {
       Alert.alert('Join failed', e?.message || 'Unknown error');
     } finally {
@@ -734,14 +691,7 @@ useFocusEffect(
             setJoinedMap(prev => ({ ...prev, [evt.id]: false }));
             const picked = getDemoJoinWallet(evt.id);
             Alert.alert('Unjoined (Demo)', `Refunded (simulated) to ${picked}.`);
-            if (demoSimEnabled) {
-              const feeCents = Math.round((Number(evt.fee)||0) * 100);
-              const current = await loadDemoOffsets(userEmail);
-              const w = picked === 'skill' ? 'skill' : 'dollars';
-              const next = { ...current, [w]: Number(current[w]||0) + feeCents };
-              await saveDemoOffsets(userEmail, next);
-              setDemoOffsets(next);
-            }
+           
           } catch (e: any) {
             Alert.alert('Unjoin failed', e?.message || 'Unknown error');
           } finally {
@@ -753,125 +703,340 @@ useFocusEffect(
   };
 
   // Demo visibility + counts computed before header uses them
-  const demoData = showDemo ? visibleRows : [];
-  const totalShown = demoData.length + (serverEvents?.length || 0);
+  // Normalize LIVE events (server)
+  const normalizedLive: NormalizedItem[] = useMemo(() => {
+    // Optional local overrides for testing featured/pinned/prizes/celebs on specific server event IDs.
+    const OVERRIDES: Record<string, Partial<any>> = {
+      '1ceae5f7baf4': {
+        featured: true,
+        pinned: true,
+        celebrityGuests: ['Hoop Wizard', 'Court Queen'],
+        prizes: [50000, 30000, 20000], // $500 • $300 • $200
+      },
+    };
+  
+    return (serverEvents || []).map((ev: any) => {
+      // Merge server event with optional local overrides.
+      const raw = { ...ev, ...(OVERRIDES[String(ev.id)] || {}) };
+      const start = new Date(raw.startsAt || raw.dateISO || Date.now());
+      return {
+        id: String(raw.id),
+        title: String(raw.name || raw.title || 'Event'),
+        startTs: start.getTime(),
+        dateLabel: start.toLocaleString(),
+        locationType: (raw.mode === 'online' || raw.locationType === 'online') ? 'online' : 'in_person',
+        venue: raw.venue,
+        feeCents: Number(raw.feeCents || raw.fee || 0),
+        isLive: true,
+        raw, // keep a reference to the full server event (with overrides)
+      } as NormalizedItem;
+    });
+  }, [serverEvents]);
+
+// Normalize DEMO events
+const normalizedDemo: NormalizedItem[] = useMemo(() => {
+  const rows = showDemo ? visibleRows : [];
+  return rows.map(d => ({
+    id: d.id,
+    title: d.title,
+    startTs: d.startTs,
+    dateLabel: d.date,
+    locationType: d.locationType,
+    venue: d.venue,
+    feeCents: Math.round(Number(d.fee || 0) * 100),
+    isLive: false,
+  }));
+}, [showDemo, visibleRows]);
+
+// Combine
+const combinedAll: NormalizedItem[] = useMemo(() => {
+  return [...normalizedLive, ...normalizedDemo];
+}, [normalizedLive, normalizedDemo]);
+
+function withinTimeFilter(item: NormalizedItem): boolean {
+  const now = Date.now();
+  const start = item.startTs;
+
+  switch (timeFilter) {
+    case 'LIVE':   return start <= now;                           // already started
+    case 'SOON':   return start > now && (start - now) <= 60*60*1000;
+    case 'TODAY': {
+      const d = new Date(now);
+      const startD = new Date(start);
+      return d.toDateString() === startD.toDateString();
+    }
+    case 'WEEK': {
+      const d = new Date(now);
+      const startD = new Date(start);
+      // same calendar week (simple approach: 7-day window from today)
+      const delta = start - now;
+      return delta >= 0 && delta <= 7*24*60*60*1000;
+    }
+    case 'MONTH': {
+      const d = new Date(now);
+      const startD = new Date(start);
+      return d.getFullYear() === startD.getFullYear() && d.getMonth() === startD.getMonth();
+    }
+    case 'ANY':
+    default:       return true;
+  }
+}
+
+function matchesSearch(item: NormalizedItem): boolean {
+  const q = (search || '').trim().toLowerCase();
+  if (!q) return true;
+  return (
+    item.title.toLowerCase().includes(q) ||
+    (item.venue || '').toLowerCase().includes(q) ||
+    item.id.toLowerCase().includes(q)
+  );
+}
+
+const unifiedRows: NormalizedItem[] = useMemo(() => {
+  let rows = combinedAll.filter(withinTimeFilter).filter(matchesSearch);
+
+  // Apply your existing "type/sort" filter
+  if (filter === 'IN_PERSON') rows = rows.filter(r => r.locationType === 'in_person');
+  if (filter === 'ONLINE')    rows = rows.filter(r => r.locationType === 'online');
+  if (filter === 'JOINED')    rows = rows.filter(r => !!joinedMap[r.id]);
+
+  // Sorts (reuse your semantics)
+  if (filter === 'SOONEST')   rows = [...rows].sort((a,b) => a.startTs - b.startTs);
+  if (filter === 'NEWEST')    rows = [...rows].sort((a,b) => b.startTs - a.startTs);
+  if (filter === 'PRICE_ASC') rows = [...rows].sort((a,b) => (a.feeCents - b.feeCents));
+  if (filter === 'PRICE_DESC')rows = [...rows].sort((a,b) => (b.feeCents - a.feeCents));
+
+    // Pinned / Featured priority (only when mixing server+demo)
+    rows = [...rows].sort((a, b) => {
+      const A = (a as any)?.raw || {};
+      const B = (b as any)?.raw || {};
+      const aPinned = !!A.pinned || !!A.featured ? 1 : 0;
+      const bPinned = !!B.pinned || !!B.featured ? 1 : 0;
+      // sort desc on pinned score
+      if (aPinned !== bPinned) return bPinned - aPinned;
+      return 0;
+    });
+
+  return rows;
+}, [combinedAll, timeFilter, search, filter, joinedMap]);
+
+const totalShown = unifiedRows.length;
 
   const ChipsHeader = (
     <View style={s.chipsSticky}>
-      <View style={s.chipsRowTop} />
+      {/* Search */}
+      <View style={{ paddingHorizontal:16, paddingTop:8 }}>
+        <View style={{ flexDirection:'row', alignItems:'center', backgroundColor:'#111', borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 10 }}>
+          <Ionicons name="search" size={16} color={colors.MUTED_TEXT} style={{ marginRight: 6 }} />
+          <TextInput
+            placeholder="Search name, venue, or ID"
+            placeholderTextColor={colors.MUTED_TEXT}
+            style={{ color: colors.TEXT, flex: 1, height: 36 }}
+            value={search}
+            onChangeText={(t) => { setSearch(t); setPage(1); }}
+          />
+          {!!search && (
+            <Pressable onPress={() => { setSearch(''); setPage(1); }} hitSlop={8}>
+              <Text style={{ color: colors.ORANGE, fontWeight: '800' }}>Clear</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+  
+      {/* Chips */}
       <View style={s.chipsGroup}>
+        {/* Time chips with active highlighting */}
+        <Chip label="Live now"      active={timeFilter==='LIVE'}  onPress={() => { setTimeFilter('LIVE');  setPage(1); }} />
+        <Chip label="Starting soon" active={timeFilter==='SOON'}  onPress={() => { setTimeFilter('SOON');  setPage(1); }} />
+        <Chip label="Today"         active={timeFilter==='TODAY'} onPress={() => { setTimeFilter('TODAY'); setPage(1); }} />
+        <Chip label="This week"     active={timeFilter==='WEEK'}  onPress={() => { setTimeFilter('WEEK');  setPage(1); }} />
+        <Chip label="This month"    active={timeFilter==='MONTH'} onPress={() => { setTimeFilter('MONTH'); setPage(1); }} />
+        <Chip label="All time"      active={timeFilter==='ANY'}   onPress={() => { setTimeFilter('ANY');  setPage(1); }} />
+  
+        {/* Existing type/sort chips */}
         <Chip label="All"        active={filter==='ALL'}        onPress={() => onSelectFilter('ALL')} />
         <Chip label="Soonest"    active={filter==='SOONEST'}    onPress={() => onSelectFilter('SOONEST')} />
         <Chip label="Newest"     active={filter==='NEWEST'}     onPress={() => onSelectFilter('NEWEST')} />
         <Chip label="In-Person"  active={filter==='IN_PERSON'}  onPress={() => onSelectFilter('IN_PERSON')} />
         <Chip label="Online"     active={filter==='ONLINE'}     onPress={() => onSelectFilter('ONLINE')} />
-        <Chip label="Joined"    active={filter==='JOINED'}    onPress={() => onSelectFilter('JOINED')} />
+        <Chip label="Joined"     active={filter==='JOINED'}     onPress={() => onSelectFilter('JOINED')} />
         <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
         <Chip label="Price ↓"    active={filter==='PRICE_DESC'} onPress={() => onSelectFilter('PRICE_DESC')} />
+  
+        {/* Clear all */}
+        <Chip label="Clear filters" onPress={clearFilters} />
       </View>
-      <View style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingBottom:6 }}>
-        <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>Demo wallet simulation</Text>
-        <Switch value={demoSimEnabled} onValueChange={saveDemoSim} />
+  
+      {/* Show/hide demo events (unchanged) */}
+      <View style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingTop:6, paddingBottom:8 }}>
+        <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>Show demo events</Text>
+        <Switch value={showDemo} onValueChange={setShowDemo} />
       </View>
-      {demoSimEnabled && hasEmail && (
-      <View style={{ paddingHorizontal:16, marginTop:6 }}>
-        {/* Offsets badge */}
-        <View style={{ backgroundColor:'#1b1b1e', borderColor:'#444', borderWidth:1, borderRadius:8, paddingVertical:6, paddingHorizontal:10, alignSelf:'flex-start' }}>
-          <Text style={{ color:'#cfcfcf', fontSize:12 }}>
-            Skill: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.skill)}</Text>
-            {'  '}Dollars: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.dollars)}</Text>
-          </Text>
-        </View>
-
-        {/* Actions */}
-        <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
-          <Pressable
-            onPress={() => resetDemoOffsets(userEmail)}
-            style={({ pressed }) => [{
-              alignSelf: 'flex-start',
-              borderColor: '#444', borderWidth: 1, borderRadius: 999,
-              paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
-            }, pressed && { opacity: 0.85 }]}
-          >
-            <Text style={{ color: '#FFB84D', fontWeight: '800', fontSize: 13 }}>Reset</Text>
-          </Pressable>
-          <Pressable
-            onPress={async () => { await resetDemoOffsets(userEmail); await saveDemoSim(false); }}
-            style={({ pressed }) => [{
-              alignSelf: 'flex-start',
-              borderColor: '#444', borderWidth: 1, borderRadius: 999,
-              paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
-            }, pressed && { opacity: 0.85 }]}
-          >
-            <Text style={{ color: '#FF6B6B', fontWeight: '800', fontSize: 13 }}>Reset &amp; turn off</Text>
-          </Pressable>
-        </View>
+  
+      {/* Event count summary (unchanged) */}
+      <View style={{ paddingHorizontal:16, paddingBottom:8 }}>
+        <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>
+          Showing {totalShown} event{totalShown === 1 ? '' : 's'} (Demo: {showDemo ? visibleRows.length : 0}, Live: {serverEvents?.length || 0})
+        </Text>
       </View>
-    )}
-
-    {/* Show/hide demo events (always visible) */}
-    <View style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingTop:6, paddingBottom:8 }}>
-      <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>Show demo events</Text>
-      <Switch value={showDemo} onValueChange={setShowDemo} />
-    </View>
-
-    {/* Event count summary */}
-    <View style={{ paddingHorizontal:16, paddingBottom:8 }}>
-      <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>
-        Showing {totalShown} event{totalShown === 1 ? '' : 's'} (Demo: {demoData.length}, Live: {serverEvents?.length || 0})
-      </Text>
-    </View>
-
     </View>
   );
 
   return (
     <View style={s.container}>
       <FlatList
-        data={demoData}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={s.listContent}
-        ItemSeparatorComponent={() => <View style={s.sep} />}
-        renderItem={({ item }) => (
-          <EventCard
-            item={item}
-            joined={!!joinedMap[item.id]}
-            joining={!!joiningMap[item.id]}
-            onJoin={() => onJoin(item)}
-            onUnjoin={() => onUnjoin(item)}
-            getWallet={getDemoJoinWallet}
-            setWallet={setJoinWalletByDemo}
-            onCopyId={copyEventId}
-          />
-        )}
-        ListHeaderComponent={ChipsHeader}
-        stickyHeaderIndices={[0]}
-        ListHeaderComponentStyle={s.chipsSticky}
-        onEndReached={loadMore}
-        onEndReachedThreshold={0.5}
-        ListFooterComponent={
-          <View>
-            {loadingMore
-              ? <View style={s.footerLoading}><ActivityIndicator /></View>
-              : !hasMore
-                ? <View style={s.footerEnd}><Text style={s.endText}>You’re all caught up</Text></View>
-                : null}
-            <LiveEventsSection
-              loading={serverLoading}
-              events={serverEvents}
-              onRefresh={reloadServerEvents}
-              joinedMap={joinedMap}
-              joiningMap={joiningMap}
-              getJoinWallet={getJoinWallet}
-              setJoinWalletByEvent={setJoinWalletByEvent}
-              onJoinLive={onJoinLive}
-              onUnjoinLive={onUnjoinLive}
-              hasEmail={hasEmail}
-              onCopyId={copyEventId}
-            />
+  data={unifiedRows}
+  keyExtractor={(item) => item.id}
+  contentContainerStyle={s.listContent}
+  ItemSeparatorComponent={() => <View style={s.sep} />}
+  ListHeaderComponent={ChipsHeader}
+  stickyHeaderIndices={[0]}
+  onEndReachedThreshold={0.4}
+  onEndReached={loadMore}
+  renderItem={({ item }) => {
+    if (item.isLive && item.raw) {
+      // Render LIVE card (reuse your existing live card look)
+      const ev = item.raw;
+      const feeLabel = `$${(Number(ev.feeCents || 0) / 100).toFixed(2)}`;
+
+      return (
+        <View
+          style={{
+            backgroundColor: '#111',
+            borderColor: ev.featured ? '#FF6600' : '#2a2a2a',
+            borderWidth: 1,
+            borderRadius: 12,
+            padding: 12,
+            shadowColor: ev.featured ? '#FF6600' : '#000',
+            shadowOpacity: ev.featured ? 0.3 : 0.2,
+            shadowRadius: ev.featured ? 8 : 6,
+            shadowOffset: { width: 0, height: ev.featured ? 4 : 3 },
+          }}
+        >
+          {/* Header row: title left, fee chip right */}
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+            <Text style={{ color:'#fff', fontWeight:'800', flexShrink:1 }} numberOfLines={1}>
+              {ev.name || 'Event'}
+            </Text>
+            {ev.feeCents != null && (
+              <View style={s.feeChip}><Text style={s.feeChipText}>{feeLabel}</Text></View>
+            )}
           </View>
-        }
+
+          <Text style={{ color:'#9a9a9a', marginTop: 2 }}>{item.dateLabel}</Text>
+          <CountdownChip startsAt={ev.startsAt || ev.dateISO} />
+
+          {/* Featured / Pinned / Type chips */}
+          <View style={s.badgeRow}>
+            {ev.featured ? <Badge text="★ Featured" /> : null}
+            {ev.pinned ? <Badge text="📌 Pinned" /> : null}
+            <Badge text={(ev.isOfficial ? 'Official' : 'Community')} />
+          </View>
+
+          {/* Prizes */}
+          {Array.isArray(ev.prizes) && ev.prizes.length > 0 ? (
+            <View style={s.prizeRow}>
+              <Ionicons name="trophy" size={14} color={colors.MUTED_TEXT} style={{ marginRight: 6 }} />
+              <Text style={s.prizeText}>{formatPrizes(ev.prizes)}</Text>
+            </View>
+          ) : null}
+
+          {/* Celebrity guests */}
+          {Array.isArray(ev.celebrityGuests) && ev.celebrityGuests.length > 0 ? (
+            <View style={s.badgeRow}>
+              {ev.celebrityGuests.map((g:string) => (
+                <View key={g} style={s.smallChip}><Text style={s.smallChipText}>⭐ {g}</Text></View>
+              ))}
+            </View>
+          ) : null}
+
+          {/* Copyable Event ID chip */}
+          <Pressable onPress={() => copyEventId(ev.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
+            <Text style={s.idChipText}>ID: {ev.id}</Text>
+          </Pressable>
+
+          {/* Participants bar & counts (if server provided) */}
+          {ev?.participantCounts ? (
+            <ParticipantBreakdown totalSpots={ev?.totalSpots ?? 100} counts={ev.participantCounts} />
+          ) : null}
+
+          {/* Wallet picker */}
+          <Text style={{ color:'#cfcfcf', marginTop:10, fontSize:12, fontWeight:'700' }}>Join with wallet</Text>
+          <View style={{ flexDirection:'row', gap:8, marginTop:10 }}>
+            <TouchableOpacity
+              onPress={() => setJoinWalletByEvent(prev => ({ ...prev, [ev.id]:'skill' }))}
+              style={{ paddingVertical:6, paddingHorizontal:10, borderRadius:6, borderWidth:1, borderColor: getJoinWallet(ev.id)==='skill' ? '#FFB84D' : '#333', backgroundColor: getJoinWallet(ev.id)==='skill' ? '#2a200f' : '#1a1a1a' }}
+            >
+              <Text style={{ color:'#fff', fontWeight:'800' }}>$Skill</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setJoinWalletByEvent(prev => ({ ...prev, [ev.id]:'dollars' }))}
+              style={{ paddingVertical:6, paddingHorizontal:10, borderRadius:6, borderWidth:1, borderColor: getJoinWallet(ev.id)==='dollars' ? '#7DFF70' : '#333', backgroundColor: getJoinWallet(ev.id)==='dollars' ? '#103014' : '#1a1a1a' }}
+            >
+              <Text style={{ color:'#fff', fontWeight:'800' }}>$Dollars</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Join/Unjoin */}
+          <View style={{ marginTop: 10, flexDirection:'row', justifyContent:'flex-end', alignItems:'center' }}>
+            {joiningMap[ev.id] ? (
+              <ActivityIndicator color="#fff" />
+            ) : joinedMap[ev.id] ? (
+              <TouchableOpacity onPress={() => onUnjoinLive(ev)} style={{ backgroundColor:'#a9a9a9', borderRadius:10, paddingVertical:8, paddingHorizontal:12 }}>
+                <Text style={{ color:'#000', fontWeight:'800' }}>Joined • Unjoin</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPress={() => onJoinLive(ev)} disabled={!hasEmail} style={{ backgroundColor:'#FF6600', borderRadius:10, paddingVertical:8, paddingHorizontal:12 }}>
+                <Text style={{ color:'#fff', fontWeight:'800' }}>Join Event</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      );
+    }
+
+    // DEMO card (your existing component)
+    return (
+      <EventCard
+        item={{
+          id: item.id,
+          title: item.title,
+          date: item.dateLabel,
+          startTs: item.startTs,
+          locationType: item.locationType,
+          venue: item.venue,
+          fee: item.feeCents / 100,
+          spotsLeft: 0, // optional
+        }}
+        joined={!!joinedMap[item.id]}
+        joining={!!joiningMap[item.id]}
+        onJoin={() => onJoin({
+          id: item.id,
+          title: item.title,
+          date: item.dateLabel,
+          startTs: item.startTs,
+          locationType: item.locationType,
+          venue: item.venue,
+          fee: item.feeCents / 100,
+          spotsLeft: 0,
+        })}
+        onUnjoin={() => onUnjoin({
+          id: item.id,
+          title: item.title,
+          date: item.dateLabel,
+          startTs: item.startTs,
+          locationType: item.locationType,
+          venue: item.venue,
+          fee: item.feeCents / 100,
+          spotsLeft: 0,
+        })}
+        getWallet={getDemoJoinWallet}
+        setWallet={setJoinWalletByDemo}
+        onCopyId={copyEventId}
       />
+    );
+  }}
+/>
     </View>
   );
 }
