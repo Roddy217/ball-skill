@@ -180,11 +180,17 @@ app.post('/api/events/:id/join', (req, res) => {
         email,
         delta: -feeCents,
         wallet,
-        note: `join:${id}`,
-        balanceAfter: (userWallet.dollars || 0) + (userWallet.skill || 0),
-        walletBalanceAfter: userWallet[wallet] || 0,
+        note: `Event Entry: ${ev?.name || id}`,
+        balanceAfter: (getWallets(email).skill + getWallets(email).dollars),
+        walletBalanceAfter: getWallets(email)[wallet],
         actor: null,
-        meta: { eventId: id },
+        meta: {
+          type: 'join',
+          eventId: id,
+          eventName: ev?.name || null,
+          feeCents,
+          usedWallet: wallet,
+        }
       });
     } catch {}
 
@@ -238,11 +244,17 @@ app.post('/api/events/:id/unjoin', (req, res) => {
         email,
         delta: feeCents,
         wallet: usedWallet,
-        note: `unjoin:${id}`,
-        balanceAfter: (userWallet.dollars || 0) + (userWallet.skill || 0),
-        walletBalanceAfter: userWallet[usedWallet] || 0,
+        note: `Refund (Event): ${ev?.name || id}`,
+        balanceAfter: (getWallets(email).skill + getWallets(email).dollars),
+        walletBalanceAfter: getWallets(email)[usedWallet],
         actor: null,
-        meta: { eventId: id },
+        meta: {
+          type: 'unjoin',
+          eventId: id,
+          eventName: ev?.name || null,
+          feeCents,
+          usedWallet,
+        }
       });
     } catch {}
 
@@ -258,6 +270,39 @@ const { PORT = 3001, STRIPE_SECRET_KEY = '' } = process.env;
 // ---- In-memory stores ----
 const events = []; // [{ id, name, dateISO, locationType, feeCents, drillsEnabled }]
 
+// --- Events: helpers for parsing/normalizing (Step 6) ---
+function toBool(v) {
+  if (typeof v === 'boolean') return v;
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y' || s === 'on';
+}
+function parsePrizes(input) {
+  // accepts array of cents or comma string like "50000,20000,10000"
+  if (Array.isArray(input)) {
+    return input
+      .map(n => Number(n))
+      .filter(n => Number.isFinite(n) && n >= 0);
+  }
+  const s = String(input || '').trim();
+  if (!s) return [];
+  return s.split(',')
+    .map(x => Number(x.trim()))
+    .filter(n => Number.isFinite(n) && n >= 0);
+}
+function parseGuests(input) {
+  if (Array.isArray(input)) return input.map(x => String(x || '').trim()).filter(Boolean);
+  const s = String(input || '').trim();
+  if (!s) return [];
+  return s.split(',').map(x => x.trim()).filter(Boolean);
+}
+function safeDateIso(v) {
+  // allow caller to pass ISO or ms; fallback to dateISO if missing
+  if (!v && v !== 0) return null;
+  const n = Number(v);
+  if (Number.isFinite(n)) return new Date(n).toISOString();
+  try { return new Date(v).toISOString(); } catch { return null; }
+}
+
 // Stripe (optional in dev; endpoints return error if not configured)
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }) : null;
 // Map email -> Stripe Account ID (DEV-ONLY memory; we will move to Firestore later)
@@ -271,30 +316,104 @@ app.get('/api/ping', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 app.get('/api/admin/ping', (_req, res) => res.json({ ok: true, admin: false, ts: Date.now() }));
 
 // ---------- Events ----------
-// List all events (includes participantCounts & computed registered)
-app.get('/api/events', (_req, res) => {
-  const list = (events || []).map(ev => {
+// List all events (with participantCounts, computed registered, and Step 6 sorting/filter)
+app.get('/api/events', (req, res) => {
+  // query params:
+  //   featured=1           → only featured events
+  //   sort=pinned,startsAt → pinned first (desc), then startsAt ascending
+  //   sort=startsAt        → startsAt ascending only
+  //   (default → no special sort)
+  const onlyFeatured = toBool(req.query.featured);
+  const sortParam = String(req.query.sort || '').trim().toLowerCase();
+  const sortKeys = sortParam ? sortParam.split(',').map(s => s.trim()) : [];
+
+  // project & compute registered
+  let list = (events || []).map(ev => {
     const counts = ev.participantCounts || { teen: 0, adult: 0, pro: 0, celebrity: 0 };
     const registered = counts.teen + counts.adult + counts.pro + counts.celebrity;
-    return { ...ev, registered };
+
+    // ensure defaults surfaced for new fields
+    const startsAt = ev.startsAt || ev.dateISO || new Date().toISOString();
+    const prizes = Array.isArray(ev.prizes) ? ev.prizes : [];
+    const featured = !!ev.featured;
+    const pinned = !!ev.pinned;
+    const celebrityGuests = Array.isArray(ev.celebrityGuests) ? ev.celebrityGuests : [];
+
+    return { ...ev, registered, startsAt, prizes, featured, pinned, celebrityGuests };
   });
+
+  if (onlyFeatured) {
+    list = list.filter(e => !!e.featured);
+  }
+
+  // sorting
+  if (sortKeys.length) {
+    list.sort((a, b) => {
+      for (const key of sortKeys) {
+        if (key === 'pinned') {
+          // pinned first (true before false)
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        } else if (key === 'startsat' || key === 'starts_at' || key === 'startsat') {
+          const ta = Number(new Date(a.startsAt).getTime());
+          const tb = Number(new Date(b.startsAt).getTime());
+          if (ta !== tb) return ta - tb; // earlier first
+        }
+      }
+      return 0;
+    });
+  }
+
   return res.json({ success: true, events: list });
 });
 
 app.post('/api/events', (req, res) => {
-  const { name, feeCents = 0, locationType = 'online', drillsEnabled = [] } = req.body || {};
+  const {
+    name,
+    feeCents = 0,
+    locationType = 'online',
+    drillsEnabled = [],
+    totalSpots = 100,
+
+    // NEW fields
+    startsAt,             // ISO or ms
+    prizes,               // array of cents OR comma string ("50000,20000,10000")
+    featured,             // boolean-like
+    pinned,               // boolean-like
+    celebrityGuests,      // array of strings OR comma string
+  } = req.body || {};
+
   if (!name) return res.status(400).json({ success: false, error: 'name required' });
+
   const id = crypto.randomBytes(6).toString('hex');
+
+  // normalize inputs
+  const fee = Number(feeCents) || 0;
+  const drills = Array.isArray(drillsEnabled) ? drillsEnabled : [];
+  const tsIso = safeDateIso(startsAt) || new Date().toISOString();
+  const prizeList = parsePrizes(prizes);
+  const guests = parseGuests(celebrityGuests);
+  const isFeatured = toBool(featured);
+  const isPinned = toBool(pinned);
+  const spots = Number(totalSpots) || 100;
+
   const ev = {
     id,
     name,
     dateISO: new Date().toISOString(),
     locationType,
-    feeCents: Number(feeCents) || 0,
-    drillsEnabled: Array.isArray(drillsEnabled) ? drillsEnabled : [],
-    totalSpots: Number(req.body?.totalSpots) || 100,
+    feeCents: fee,
+    drillsEnabled: drills,
+    totalSpots: spots,
     participantCounts: { teen: 0, adult: 0, pro: 0, celebrity: 0 },
+
+    // NEW fields surfaced on the model
+    startsAt: tsIso,          // ISO string
+    prizes: prizeList,        // number[] (cents)
+    featured: isFeatured,     // boolean
+    pinned: isPinned,         // boolean
+    celebrityGuests: guests,  // string[]
   };
+
   events.push(ev);
   return res.json({ success: true, event: ev });
 });

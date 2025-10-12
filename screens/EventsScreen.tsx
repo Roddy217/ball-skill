@@ -135,9 +135,57 @@ function ParticipantBreakdown({ totalSpots = 100, counts }: { totalSpots?: numbe
   );
 }
 
+// ---- Countdown helpers ----
+function msUntil(iso?: string) {
+  if (!iso) return 0;
+  const t = Number(new Date(iso).getTime());
+  return Math.max(0, t - Date.now());
+}
+function formatCountdown(ms: number) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n:number) => String(n).padStart(2, '0');
+  if (h > 99) return `T-${h}h`;
+  return `T-${pad(h)}:${pad(m)}:${pad(sec)}`;
+}
+// Verbose human readable countdown label: "Starting in: 2 days 3 hours 10 minutes"
+function formatCountdownLong(ms: number) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+
+  const parts: string[] = [];
+  if (days) parts.push(`${days} day${days === 1 ? '' : 's'}`);
+  if (hours) parts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
+  if (minutes) parts.push(`${minutes} minute${minutes === 1 ? '' : 's'}`);
+  if (!days && !hours && !minutes) parts.push(`${seconds} second${seconds === 1 ? '' : 's'}`);
+
+  return parts.length ? `Starting in: ${parts.join(' ')}` : 'Starting soon';
+}
+function useCountdown(startsAt?: string) {
+  const [left, setLeft] = useState<number>(msUntil(startsAt));
+  useEffect(() => {
+    setLeft(msUntil(startsAt));
+    if (!startsAt) return;
+    const id = setInterval(() => setLeft(msUntil(startsAt)), 1000);
+    return () => clearInterval(id);
+  }, [startsAt]);
+  return left;
+}
+function formatPrizes(prizes?: number[]) {
+  if (!Array.isArray(prizes) || prizes.length === 0) return '';
+  return prizes.map(c => `$${(Number(c||0)/100).toFixed(0)}`).join(' • ');
+}
+
 // ---- Server events fetch helper (top-level) ----
 async function fetchServerEvents(): Promise<Array<any>> {
-  const res = await fetch(`${API}/events`).then(r => r.json()).catch(() => ({ success:false, events:[] }));
+  const res = await fetch(`${API}/events?sort=pinned,startsAt`)
+    .then(r => r.json())
+    .catch(() => ({ success:false, events:[] }));
   return Array.isArray(res?.events) ? res.events : [];
 }
 
@@ -176,7 +224,20 @@ function LiveEventsSection({
       ) : (
         <View style={{ marginTop: 8, gap: 12 }}>
           {events.map((ev:any) => (
-            <View key={ev.id} style={{ backgroundColor: '#111', borderColor: '#2a2a2a', borderWidth: 1, borderRadius: 12, padding: 12 }}>
+            <View
+            key={ev.id}
+            style={{
+              backgroundColor: '#111',
+              borderColor: ev.featured ? '#FF6600' : '#2a2a2a',
+              borderWidth: 1,
+              borderRadius: 12,
+              padding: 12,
+              shadowColor: ev.featured ? '#FF6600' : '#000',
+              shadowOpacity: ev.featured ? 0.3 : 0.2,
+              shadowRadius: ev.featured ? 8 : 6,
+              shadowOffset: { width: 0, height: ev.featured ? 4 : 3 },
+            }}
+          >
             {/* Header row: title left, fee chip right */}
             <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
               <Text style={{ color:'#fff', fontWeight:'800', flexShrink:1 }} numberOfLines={1}>
@@ -190,6 +251,32 @@ function LiveEventsSection({
             <Text style={{ color:'#9a9a9a', marginTop: 2 }}>
               {new Date(ev.dateISO || Date.now()).toLocaleString()}
             </Text>
+            <CountdownChip startsAt={ev.startsAt || ev.dateISO} />
+
+            {/* Featured / Pinned / Type chips */}
+            <View style={s.badgeRow}>
+              {ev.featured ? <Badge text="★ Featured" /> : null}
+              {ev.pinned ? <Badge text="📌 Pinned" /> : null}
+              <Badge text={(ev.isOfficial ? 'Official' : 'Community')} />
+            </View>
+
+            {/* Prizes */}
+            {Array.isArray(ev.prizes) && ev.prizes.length > 0 ? (
+              <View style={s.prizeRow}>
+                <Ionicons name="trophy" size={14} color={colors.MUTED_TEXT} style={{ marginRight: 6 }} />
+                <Text style={s.prizeText}>{formatPrizes(ev.prizes)}</Text>
+              </View>
+            ) : null}
+
+            {/* Celebrity guests */}
+            {Array.isArray(ev.celebrityGuests) && ev.celebrityGuests.length > 0 ? (
+              <View style={s.badgeRow}>
+                {ev.celebrityGuests.map((g:string) => (
+                  <View key={g} style={s.smallChip}><Text style={s.smallChipText}>⭐ {g}</Text></View>
+                ))}
+              </View>
+            ) : null}
+
 
             {/* Copyable Event ID chip */}
             <Pressable onPress={() => onCopyId(ev.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
@@ -263,6 +350,7 @@ export default function EventsScreen() {
   const hasEmail = !!(user && !user.isAnonymous && user.email);
   const userEmail = email; // ensure the variable used below actually exists
   const [filter, setFilter] = useState<SortFilter>('SOONEST');
+  const [showDemo, setShowDemo] = useState<boolean>(true);
   const [apiBase, setApiBaseState] = useState<string>('');
   const [balance, setBalance] = useState<string | null>(null)
 
@@ -663,6 +751,11 @@ useFocusEffect(
       }
     ]);
   };
+
+  // Demo visibility + counts computed before header uses them
+  const demoData = showDemo ? visibleRows : [];
+  const totalShown = demoData.length + (serverEvents?.length || 0);
+
   const ChipsHeader = (
     <View style={s.chipsSticky}>
       <View style={s.chipsRowTop} />
@@ -681,47 +774,61 @@ useFocusEffect(
         <Switch value={demoSimEnabled} onValueChange={saveDemoSim} />
       </View>
       {demoSimEnabled && hasEmail && (
-  <View style={{ paddingHorizontal:16, marginTop:6, flexDirection:'row', alignItems:'center', justifyContent:'space-between' }}>
-    {/* Offsets badge */}
-    <View style={{ backgroundColor:'#1b1b1e', borderColor:'#444', borderWidth:1, borderRadius:8, paddingVertical:6, paddingHorizontal:10, maxWidth:'65%' }}>
-      <Text style={{ color:'#cfcfcf', fontSize:12 }}>
-        Skill: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.skill)}</Text>,
-        {' '}Dollars: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.dollars)}</Text>
+      <View style={{ paddingHorizontal:16, marginTop:6 }}>
+        {/* Offsets badge */}
+        <View style={{ backgroundColor:'#1b1b1e', borderColor:'#444', borderWidth:1, borderRadius:8, paddingVertical:6, paddingHorizontal:10, alignSelf:'flex-start' }}>
+          <Text style={{ color:'#cfcfcf', fontSize:12 }}>
+            Skill: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.skill)}</Text>
+            {'  '}Dollars: <Text style={{ color:'#fff', fontWeight:'800' }}>{fmtMoney(demoOffsets.dollars)}</Text>
+          </Text>
+        </View>
+
+        {/* Actions */}
+        <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
+          <Pressable
+            onPress={() => resetDemoOffsets(userEmail)}
+            style={({ pressed }) => [{
+              alignSelf: 'flex-start',
+              borderColor: '#444', borderWidth: 1, borderRadius: 999,
+              paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
+            }, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={{ color: '#FFB84D', fontWeight: '800', fontSize: 13 }}>Reset</Text>
+          </Pressable>
+          <Pressable
+            onPress={async () => { await resetDemoOffsets(userEmail); await saveDemoSim(false); }}
+            style={({ pressed }) => [{
+              alignSelf: 'flex-start',
+              borderColor: '#444', borderWidth: 1, borderRadius: 999,
+              paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
+            }, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={{ color: '#FF6B6B', fontWeight: '800', fontSize: 13 }}>Reset &amp; turn off</Text>
+          </Pressable>
+        </View>
+      </View>
+    )}
+
+    {/* Show/hide demo events (always visible) */}
+    <View style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingTop:6, paddingBottom:8 }}>
+      <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>Show demo events</Text>
+      <Switch value={showDemo} onValueChange={setShowDemo} />
+    </View>
+
+    {/* Event count summary */}
+    <View style={{ paddingHorizontal:16, paddingBottom:8 }}>
+      <Text style={{ color: colors.MUTED_TEXT, fontSize: 12 }}>
+        Showing {totalShown} event{totalShown === 1 ? '' : 's'} (Demo: {demoData.length}, Live: {serverEvents?.length || 0})
       </Text>
     </View>
 
-    {/* Actions */}
-    <View style={{ flexDirection:'row', gap:8 }}>
-      <Pressable
-        onPress={() => resetDemoOffsets(userEmail)}
-        style={({ pressed }) => [{
-          alignSelf: 'flex-start',
-          borderColor: '#444', borderWidth: 1, borderRadius: 999,
-          paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
-        }, pressed && { opacity: 0.85 }]}
-      >
-        <Text style={{ color: '#FFB84D', fontWeight: '800', fontSize: 13 }}>Reset</Text>
-      </Pressable>
-      <Pressable
-        onPress={async () => { await resetDemoOffsets(userEmail); await saveDemoSim(false); }}
-        style={({ pressed }) => [{
-          alignSelf: 'flex-start',
-          borderColor: '#444', borderWidth: 1, borderRadius: 999,
-          paddingHorizontal: 12, paddingVertical: 7, backgroundColor: '#181818'
-        }, pressed && { opacity: 0.85 }]}
-      >
-        <Text style={{ color: '#FF6B6B', fontWeight: '800', fontSize: 13 }}>Reset & turn off</Text>
-      </Pressable>
-    </View>
-  </View>
-)}
     </View>
   );
 
   return (
     <View style={s.container}>
       <FlatList
-        data={visibleRows}
+        data={demoData}
         keyExtractor={(item) => item.id}
         contentContainerStyle={s.listContent}
         ItemSeparatorComponent={() => <View style={s.sep} />}
@@ -769,6 +876,17 @@ useFocusEffect(
   );
 }
 
+
+function CountdownChip({ startsAt }: { startsAt?: string }) {
+  const left = useCountdown(startsAt);
+  if (!startsAt) return null;
+  return (
+    <View style={s.countdownChip}>
+      <Text style={s.countdownText}>{left > 0 ? formatCountdownLong(left) : 'Live / Started'}</Text>
+    </View>
+  );
+}
+
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
     <Pressable
@@ -778,6 +896,12 @@ function Chip({ label, active, onPress }: { label: string; active?: boolean; onP
     >
       <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
     </Pressable>
+  );
+}
+
+function Badge({ text }: { text: string }) {
+  return (
+    <View style={s.smallChip}><Text style={s.smallChipText}>{text}</Text></View>
   );
 }
 
@@ -805,6 +929,15 @@ function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWall
       <View style={s.metaRow}>
         <Ionicons name={item.locationType === 'online' ? 'wifi-outline' : 'location-outline'} size={16} color={colors.MUTED_TEXT} style={s.metaIcon} />
         <Text style={s.metaText}>{item.locationType === 'online' ? 'Online' : item.venue ?? 'In person'}</Text>
+      </View>
+
+      {/* Countdown on demo (using startTs) */}
+      <CountdownChip startsAt={new Date(item.startTs).toISOString()} />
+
+      {/* Type chips (Demo is always Community) */}
+      <View style={s.badgeRow}>
+        <View style={s.smallChip}><Text style={s.smallChipText}>🧪 Demo</Text></View>
+        <View style={s.smallChip}><Text style={s.smallChipText}>Community</Text></View>
       </View>
 
       <Pressable onPress={() => onCopyId(item.id)} hitSlop={8} style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}>
@@ -982,4 +1115,34 @@ const s = StyleSheet.create({
   footerLoading: { paddingVertical: 16 },
   footerEnd: { paddingVertical: 16, alignItems: 'center' },
   endText: { color: '#9a9a9a' },
+
+    // countdown + chips
+    countdownChip: {
+      marginTop: 6,
+      alignSelf: 'flex-start',
+      backgroundColor: '#1b1b1e',
+      borderColor: colors.BORDER,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: 999,
+      paddingVertical: 4,
+      paddingHorizontal: 10,
+    },
+    countdownText: { color: colors.TEXT, fontWeight: '800', fontSize: 12, flexShrink: 1 },
+  
+    badgeRow: { marginTop: 6, flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+    smallChip: {
+      backgroundColor: '#151515',
+      borderColor: colors.BORDER,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: 999,
+      paddingVertical: 4,
+      paddingHorizontal: 10,
+    },
+    smallChipText: { color: colors.MUTED_TEXT, fontWeight: '700', fontSize: 11 },
+  
+    prizeRow: { marginTop: 8, flexDirection: 'row', alignItems: 'center' },
+    prizeText: { color: colors.TEXT, fontWeight: '700', fontSize: 12 },
+  
+    // already used fee chip stays as-is; reusing idChip styles you already have
+
 });

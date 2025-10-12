@@ -20,7 +20,8 @@ import AutoEventId from '../components/AutoEventId';
 import { useAuth } from '../providers/AuthProvider';
 import * as bank from '../services/balanceService';
 import { addEmail } from '../services/emailStore';
-import TransactionList from '../components/TransactionList';
+import TransactionList, { TransactionListHandle } from '../components/TransactionList';
+
 
 
 const ORANGE = '#FF6600', CARD = '#111', BORDER = '#2a2a2a', MUTED = '#9a9a9a', GREEN = '#16a34a', RED = '#ef4444';
@@ -400,6 +401,8 @@ const [histLimit, setHistLimit] = useState(50);
   const [gBal, setGBal] = useState<number | null>(null);
   const [gBalLoading, setGBalLoading] = useState(false);
 
+  const txRef = useRef<TransactionListHandle>(null);
+
   // debounce: balance when email changes (history is handled by <TransactionList>)
   useEffect(() => {
     let t: any;
@@ -451,6 +454,8 @@ const [histLimit, setHistLimit] = useState(50);
       setGDelta('');
       setGNote('');
 
+      txRef.current?.reload();
+
       Alert.alert(
         'Credits',
         `Granted ${fmtDelta(amountCents)} to ${gEmail.trim().toLowerCase()}`
@@ -496,6 +501,8 @@ const [histLimit, setHistLimit] = useState(50);
       // auto-clear inputs after success
       setGDelta('');
       setGNote('');
+
+      txRef.current?.reload();
 
       Alert.alert(
         'Credits',
@@ -812,12 +819,13 @@ const [histLimit, setHistLimit] = useState(50);
 
               {/* Contained scroll */}
               <ScrollView style={{ maxHeight: 360 }} nestedScrollEnabled>
-                <TransactionList
-                  variant="admin"
-                  email={(gEmail || '').trim() || undefined}
-                  embedded
-                  pageSize={histLimit}
-                />
+              <TransactionList
+                ref={txRef}                          // ← ADD THIS
+                variant="admin"
+                email={(gEmail || '').trim() || undefined}
+                embedded
+                pageSize={histLimit}
+              />
               </ScrollView>
             </>
           )}

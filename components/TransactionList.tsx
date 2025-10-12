@@ -1,5 +1,5 @@
 // components/TransactionList.tsx
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
     View,
     Text,
@@ -14,6 +14,10 @@ import {
   } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import colors from '../theme/colors';
+
+export type TransactionListHandle = {
+    reload: () => void;
+  };
 
 type Wallet = 'skill' | 'dollars';
 
@@ -98,16 +102,20 @@ function Pill({ text, bg, fg }: { text: string; bg: string; fg: string }) {
   );
 }
 
-export default function TransactionList({
-  email,
-  variant = 'user',
-  pageSize = 50,
-  embedded = false,
-  showFilters = true,
-  style,
-  onReversed,
-  embeddedMaxHeight = 420,
-}: Props) {
+const TransactionList = forwardRef<TransactionListHandle, Props>(
+  (
+    {
+      email,
+      variant = 'user',
+      pageSize = 50,
+      embedded = false,
+      showFilters = true,
+      style,
+      onReversed,
+      embeddedMaxHeight = 420,
+    }: Props,
+    ref
+  ) => {
 
   const [items, setItems] = useState<Tx[]>([]);
   const [total, setTotal] = useState<number>(0);
@@ -266,6 +274,13 @@ const sinceMs = useMemo(() => {
       setRefreshing(false);
     }
   }, [load]);
+
+    // Expose imperative reload to parent (Admin auto-refresh after grant/deduct)
+    useImperativeHandle(ref, () => ({
+        reload: () => {
+          load({ reset: true });
+        },
+      }), [load]);
 
   const hasMore = items.length < total;
 
@@ -619,7 +634,7 @@ const sinceMs = useMemo(() => {
       )}
     />
   );
-}
+});
 
 const s = StyleSheet.create({
   box: { paddingHorizontal: 12, paddingVertical: 8 },
@@ -675,3 +690,5 @@ const s = StyleSheet.create({
   },
   reverseText: { color: '#FF6B6B', fontWeight: '900', fontSize: 12 },
 });
+
+export default TransactionList;
