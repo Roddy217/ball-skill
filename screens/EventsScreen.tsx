@@ -2,7 +2,7 @@ import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { View, Text, ScrollView, TextInput, Switch, TouchableOpacity, StyleSheet, FlatList, Pressable, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import colors from '../theme/colors';
-import { getRegistrationStatus, loadApiBase, getApiBase, getBalance } from '../services/api';
+import { loadApiBase, getApiBase, getBalance } from '../services/api';
 import { useFocusEffect } from '@react-navigation/native';
 import * as api from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
@@ -10,6 +10,90 @@ import { useAuth } from '../providers/AuthProvider';
 import * as Clipboard from 'expo-clipboard';
 
 console.log('[Events] api keys:', Object.keys(api));
+
+// --- Shim: getRegistrationStatus missing in api? ---
+// Prefer api.getRegistrationStatus(email, eventId) if present; otherwise fall back to /joins
+async function getRegistrationStatusShim(email: string, eventId: string): Promise<{ registered: boolean }> {
+  try {
+    const anyApi: any = api as any;
+    if (anyApi && typeof anyApi.getRegistrationStatus === 'function') {
+      return await anyApi.getRegistrationStatus(email, eventId);
+    }
+    // Fallback: fetch all joins for the user and check membership
+    if (!email) return { registered: false };
+    const res = await anyApi.getUserJoins(email);
+    const joined = Array.isArray(res?.joined) ? res.joined : [];
+    return { registered: joined.includes(eventId) };
+  } catch {
+    return { registered: false };
+  }
+}
+
+// --- Natural-language time search ---
+// Returns a TimeFilter or null if no match
+function parseTimeSearch(input: string): TimeFilter | null {
+  if (!input) return null;
+  const q = input.trim().toLowerCase();
+
+  // Direct keywords
+  if (/(^|\s)(live|live now)(\s|$)/.test(q)) return 'LIVE';
+  if (/(^|\s)(soon|starting soon)(\s|$)/.test(q)) return 'SOON';
+  if (/(^|\s)(today|tonight)(\s|$)/.test(q)) return 'TODAY';
+  if (/this week/.test(q)) return 'WEEK';
+  if (/this month/.test(q)) return 'MONTH';
+  if (/all time|any time|any/.test(q)) return 'ANY';
+
+  // Patterns like "starting in 2 hours", "in 45 minutes", "in 3 days"
+  const inRe = /(starting\s+in|in)\s+(\d+)\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/;
+  const m = q.match(inRe);
+  if (m) {
+    const n = Number(m[2] || 0);
+    const unit = m[3];
+    if (/(minute|min)/.test(unit)) return 'SOON'; // within an hour
+    if (/(hour|hr)/.test(unit)) {
+      if (n <= 1) return 'SOON';
+      if (n < 24) return 'TODAY';
+      if (n <= 24 * 7) return 'WEEK';
+      return 'MONTH';
+    }
+    if (/day/.test(unit)) {
+      if (n === 0) return 'TODAY';
+      if (n <= 7) return 'WEEK';
+      return 'MONTH';
+    }
+  }
+  return null;
+}
+
+// Map of canonical phrases -> TimeFilter (for suggestions + parsing)
+const TIME_PHRASE_MAP: Array<{ phrase: string; tf: TimeFilter }> = [
+  { phrase: 'live now',        tf: 'LIVE' },
+  { phrase: 'starting soon',   tf: 'SOON' },
+  { phrase: 'today',           tf: 'TODAY' },
+  { phrase: 'this week',       tf: 'WEEK' },
+  { phrase: 'this month',      tf: 'MONTH' },
+  { phrase: 'all time',        tf: 'ANY' },
+];
+
+// Strip any known time phrases/patterns from free text, so text search
+// only looks at title/venue/id terms.
+function stripTimeTermsForSearch(input: string): string {
+  if (!input) return '';
+  let q = input.toLowerCase();
+
+  // Remove canonical phrases
+  for (const { phrase } of TIME_PHRASE_MAP) {
+    const re = new RegExp(`\\b${phrase.replace(/\s+/g, '\\s+')}\\b`, 'g');
+    q = q.replace(re, ' ');
+  }
+
+  // Remove "starting in X ..." patterns
+  q = q.replace(/(starting\s+in|in)\s+\d+\s*(minute|minutes|min|hour|hours|hr|hrs|day|days)\b/g, ' ');
+
+  // Collapse whitespace
+  q = q.replace(/\s+/g, ' ').trim();
+  return q;
+}
 
 const SERVER = (process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001').replace(/\/+$/, '');
 const API = `${SERVER}/api`;
@@ -368,6 +452,41 @@ export default function EventsScreen() {
   const [search, setSearch] = useState<string>('');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('ANY');
 
+  const [timeSuggs, setTimeSuggs] = useState<string[]>([]);
+
+  function computeTimeSuggestions(input: string): string[] {
+    const q = (input || '').trim().toLowerCase();
+    if (!q) return [];
+    // Suggest when user starts typing a relevant prefix
+    const pref = TIME_PHRASE_MAP
+      .map(x => x.phrase)
+      .filter(p => p.startsWith(q) || q.startsWith(p.slice(0, Math.max(2, Math.min(4, p.length)))))
+      .slice(0, 5);
+  
+    // Also add a couple of generic patterns for "in X ..."
+    if (/^s|^st|^sta/i.test(q) && !pref.includes('starting soon')) pref.unshift('starting soon');
+    if (/^l|^li|^liv/i.test(q) && !pref.includes('live now')) pref.unshift('live now');
+    if (/^to|^tod/i.test(q) && !pref.includes('today')) pref.unshift('today');
+  
+    // Deduplicate while preserving order
+    const seen = new Set<string>();
+    return pref.filter(p => (seen.has(p) ? false : (seen.add(p), true)));
+  }
+
+function applySuggestion(phrase: string) {
+  setSearch(phrase);
+  setPage(1);
+  const entry = TIME_PHRASE_MAP.find(x => x.phrase === phrase);
+  if (entry) {
+    setTimeFilter(entry.tf);
+  } else {
+    // fallback: parse generic phrase like "starting in 2 hours"
+    const tf = parseTimeSearch(phrase);
+    setTimeFilter(tf || 'ANY');
+  }
+  setTimeSuggs([]);
+}
+
   const clearFilters = useCallback(() => {
     setSearch('');
     setTimeFilter('ANY');
@@ -571,7 +690,7 @@ useFocusEffect(
       for (const evt of visibleRows) {
         if (joinedMap[evt.id] !== undefined) continue;
         try {
-        const { registered } = await getRegistrationStatus(userEmail, evt.id);
+          const { registered } = await getRegistrationStatusShim(userEmail, evt.id);
         if (!cancelled) {
           setJoinedMap(prev => ({ ...prev, [evt.id]: !!registered }));
         }
@@ -582,7 +701,7 @@ useFocusEffect(
   for (const ev of serverEvents) {
     if (joinedMap[ev.id] !== undefined) continue;
     try {
-      const { registered } = await getRegistrationStatus(userEmail, ev.id);
+      const { registered } = await getRegistrationStatusShim(userEmail, ev.id);
       if (!cancelled) {
         setJoinedMap(prev => ({ ...prev, [ev.id]: !!registered }));
       }
@@ -783,7 +902,7 @@ function withinTimeFilter(item: NormalizedItem): boolean {
 }
 
 function matchesSearch(item: NormalizedItem): boolean {
-  const q = (search || '').trim().toLowerCase();
+  const q = stripTimeTermsForSearch(search || '');
   if (!q) return true;
   return (
     item.title.toLowerCase().includes(q) ||
@@ -833,15 +952,45 @@ const totalShown = unifiedRows.length;
             placeholderTextColor={colors.MUTED_TEXT}
             style={{ color: colors.TEXT, flex: 1, height: 36 }}
             value={search}
-            onChangeText={(t) => { setSearch(t); setPage(1); }}
+            onChangeText={(t) => {
+              setSearch(t);
+              setPage(1);
+              const tf = parseTimeSearch(t);
+              if (tf) {
+                setTimeFilter(tf);
+              } else if (!t) {
+                setTimeFilter('ANY');
+              }
+              setTimeSuggs(computeTimeSuggestions(t));
+            }}
           />
           {!!search && (
-            <Pressable onPress={() => { setSearch(''); setPage(1); }} hitSlop={8}>
-              <Text style={{ color: colors.ORANGE, fontWeight: '800' }}>Clear</Text>
-            </Pressable>
+            <Pressable
+            onPress={() => {
+              setSearch('');
+              setPage(1);
+              setTimeFilter('ANY');
+              setTimeSuggs([]);
+            }}
+            hitSlop={8}
+          >
+            <Text style={{ color: colors.ORANGE, fontWeight: '800' }}>Clear</Text>
+          </Pressable>
           )}
         </View>
       </View>
+
+      {!!timeSuggs.length && (
+      <View style={{ paddingHorizontal: 16, paddingTop: 6 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {timeSuggs.map(s => (
+            <Pressable key={s} onPress={() => applySuggestion(s)} style={[sBaseChip, { backgroundColor: '#191919', borderColor: colors.BORDER }]}>
+              <Text style={{ color: colors.TEXT, fontWeight: '700', fontSize: 12 }}>{s}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
+    )}
   
       {/* Chips */}
       <View style={s.chipsGroup}>
@@ -886,11 +1035,11 @@ const totalShown = unifiedRows.length;
     <View style={s.container}>
       <FlatList
   data={unifiedRows}
-  keyExtractor={(item) => item.id}
-  contentContainerStyle={s.listContent}
-  ItemSeparatorComponent={() => <View style={s.sep} />}
+  keyExtractor={(it) => String(it.id)}
   ListHeaderComponent={ChipsHeader}
-  stickyHeaderIndices={[0]}
+  stickyHeaderIndices={[0]}  // ← makes the header sticky
+  contentContainerStyle={{ paddingBottom: 40 }}
+  ItemSeparatorComponent={() => <View style={s.sep} />}
   onEndReachedThreshold={0.4}
   onEndReached={loadMore}
   renderItem={({ item }) => {
@@ -1167,6 +1316,13 @@ function EventCard({ item, joined, joining, onJoin, onUnjoin, getWallet, setWall
   );
 }
 
+const sBaseChip = {
+  paddingVertical: 6,
+  paddingHorizontal: 10,
+  borderRadius: 999,
+  borderWidth: StyleSheet.hairlineWidth,
+};
+
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.CANVAS },
   listContent: { paddingHorizontal: 16, paddingBottom: 24 },
@@ -1307,6 +1463,8 @@ const s = StyleSheet.create({
   
     prizeRow: { marginTop: 8, flexDirection: 'row', alignItems: 'center' },
     prizeText: { color: colors.TEXT, fontWeight: '700', fontSize: 12 },
+
+    
   
     // already used fee chip stays as-is; reusing idChip styles you already have
 
