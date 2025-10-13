@@ -3,9 +3,10 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, Activity
 import { useFocusEffect } from '@react-navigation/native';
 import colors from '../theme/colors';
 import { useAuth } from '../providers/AuthProvider';
-import api, { getBalance, getUserJoins, grantCredits, getCreditsHistory } from '../services/api';
+import api, { getBalance, getUserJoins, getCreditsHistory } from '../services/api';
 import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState';
 import IdChip from '../components/IdChip';
+import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import TransactionList from '../components/TransactionList';
 
@@ -140,6 +141,7 @@ export default function ProfileScreen() {
   const anchors = useRef<{ profile: number; balance: number; events: number; tx: number; create: number }>({
     profile: 0, balance: 0, events: 0, tx: 0, create: 0,
   });
+  const [activeSection, setActiveSection] = useState<'profile'|'balance'|'events'|'tx'|'create'>('profile');
   const setAnchor = (key: keyof typeof anchors.current) =>
     (e: any) => { anchors.current[key] = e?.nativeEvent?.layout?.y ?? 0; };
 
@@ -147,6 +149,17 @@ export default function ProfileScreen() {
     const y = Math.max(anchors.current[key] - 8, 0);
     scRef.current?.scrollTo?.({ y, animated: true });
   };
+
+  const handleScroll = useCallback((e: any) => {
+    const y = e?.nativeEvent?.contentOffset?.y ?? 0;
+    // Use small offsets to detect which section is currently on top
+    const order: Array<keyof typeof anchors.current> = ['profile','balance','events','tx','create'];
+    let current: typeof order[number] = 'profile';
+    for (const key of order) {
+      if (y + 24 >= (anchors.current[key] || 0)) current = key;
+    }
+    setActiveSection(current);
+  }, []);
 
   // Card collapse state
   const [collapsed, setCollapsed] = useState<{ profile: boolean; balance: boolean; events: boolean; tx: boolean; create: boolean }>({
@@ -276,46 +289,38 @@ export default function ProfileScreen() {
       return next;
     });
 
-    const fee = Math.abs(Number(ev.fee) || 0);
-    console.log('[Profile][unjoin] START', { id: ev.id, email, fee });
+    console.log('[Profile][unjoin] START', { id: ev.id, email });
 
-    try {
-      // 1) remove join on server (idempotent)
-      await api.unrecordJoin(ev.id, email);
-      console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
+  try {
+    // 1) remove join on server (server will also refund back to the wallet originally used)
+    await api.unrecordJoin(ev.id, email);
+    console.log('[Profile][unjoin] server unrecordJoin OK', ev.id);
 
-      // 2) update local cache so Events tab respects the change
-      await setJoinedLocal(email, ev.id, false);
-      console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
+    // 2) update local cache so Events tab respects the change
+    await setJoinedLocal(email, ev.id, false);
+    console.log('[Profile][unjoin] setJoinedLocal →', email, ev.id);
 
-      // 3) do ONE refund
-      if (fee > 0) {
-        await grantCredits(email, fee * 100, `unjoin:${ev.id}`);
-        console.log('[Profile][unjoin] grantCredits OK', ev.id, fee * 100);
-      }
+    // 3) update UI joined list
+    setJoinedIds(prev => prev.filter(id => id !== ev.id));
 
-      // 4) update UI + balance
-      setJoinedIds(prev => prev.filter(id => id !== ev.id));
-      const cents = await getBalance(email).catch(() => null);
-      if (typeof cents === 'number') setBalanceCents(cents as any);
+    // 4) refresh balance & transactions from backend (no local math)
+    await loadBalanceOnly();
+    await loadHistory();
 
-      // 5) also refresh transaction history so the refund shows immediately
-      await loadHistory();
-
-      Alert.alert('Unjoined', `Refunded ${fee}.`);
-    } catch (e: any) {
-      console.log('[Profile][unjoin] ERROR', e);
-      Alert.alert('Failed', e?.message || 'Could not unjoin');
-    } finally {
-      // clear busy
-      setUnjoiningSet(prev => {
-        const next = new Set(prev);
-        next.delete(ev.id);
-        return next;
-      });
-      console.log('[Profile][unjoin] END', ev.id);
-    }
-  }, [email, isUnjoining, loadHistory]);
+    Alert.alert('Unjoined', `You have been removed from this event and refunded.`);
+  } catch (e: any) {
+    console.log('[Profile][unjoin] ERROR', e);
+    Alert.alert('Failed', e?.message || 'Could not unjoin');
+  } finally {
+    // clear busy
+    setUnjoiningSet(prev => {
+      const next = new Set(prev);
+      next.delete(ev.id);
+      return next;
+    });
+    console.log('[Profile][unjoin] END', ev.id);
+  }
+}, [email, isUnjoining, loadBalanceOnly, loadHistory]);
 
   // ---- Transaction helpers + derived lists ----
   const fmtDollars = useCallback((cents: number) => {
@@ -411,6 +416,24 @@ export default function ProfileScreen() {
   }, [rows, evDateFilter, evMonthRange, evWeekRange]);
 
   const visibleEvents = useMemo(() => rowsDated.slice(0, evLimit), [rowsDated, evLimit]);
+  // Map the most recent JOIN tx per eventId so the card can show fee + wallet used
+  const joinMetaById = useMemo(() => {
+    // Expect entries like: meta = { type: 'join', eventId, eventName, feeCents, usedWallet }
+    const map = new Map<string, { feeCents: number | null; usedWallet: 'skill' | 'dollars' | null; ts: number }>();
+    for (const it of history) {
+      const m: any = (it as any).meta;
+      if (!m || m.type !== 'join' || !m.eventId) continue;
+      const prev = map.get(m.eventId);
+      if (!prev || it.ts > prev.ts) {
+        map.set(m.eventId, {
+          feeCents: typeof m.feeCents === 'number' ? m.feeCents : null,
+          usedWallet: (m.usedWallet === 'skill' || m.usedWallet === 'dollars') ? m.usedWallet : null,
+          ts: it.ts,
+        });
+      }
+    }
+    return map;
+  }, [history]);
 
   const onUnjoin = useCallback((ev: CatalogEvent) => {
     handleProfileUnjoin(ev);
@@ -425,6 +448,64 @@ export default function ProfileScreen() {
       setRefreshing(false);
     }
   }, [load, loadHistory]);
+
+  // --- Legacy demo joins cleanup helpers ---
+  const hasDemoJoins = useMemo(() => joinedIds.some(id => id.startsWith('evt_')), [joinedIds]);
+
+  const clearDemoJoins = useCallback(async () => {
+    if (!email) return;
+    try {
+      const map = await loadJoinedMap(email);
+      const next: Record<string, boolean> = { ...(map || {}) };
+      let changed = false;
+      Object.keys(next).forEach(id => {
+        if (id.startsWith('evt_')) { next[id] = false; changed = true; }
+      });
+      if (changed) {
+        await saveJoinedMap(email, next);
+        setJoinedIds(prev => prev.filter(id => !id.startsWith('evt_')));
+        Alert.alert('Cleared', 'Legacy demo joins removed from this device.');
+      } else {
+        Alert.alert('Nothing to clear', 'No legacy demo joins found.');
+      }
+    } catch (e: any) {
+      console.log('[Profile][clearDemoJoins] error', e);
+      Alert.alert('Error', e?.message || 'Failed to clear demo joins.');
+    }
+  }, [email, joinedIds]);
+
+  const syncJoinsToServer = useCallback(async () => {
+    if (!email) return;
+    try {
+      // Ask server for the authoritative list
+      const raw = await getUserJoins(email);
+      let serverIds: string[] = [];
+      if (Array.isArray(raw)) {
+        serverIds = raw.map((it: any) => it?.id || it?.eventId).filter(Boolean);
+      } else if (raw && Array.isArray((raw as any).joins)) {
+        serverIds = (raw as any).joins.map((it: any) => it?.id || it?.eventId).filter(Boolean);
+      } else if (raw && Array.isArray((raw as any).events)) {
+        serverIds = (raw as any).events.map((it: any) => it?.id || it?.eventId).filter(Boolean);
+      }
+
+      const map = await loadJoinedMap(email);
+      const next: Record<string, boolean> = { ...(map || {}) };
+
+      // Turn off any local-only joins not present on server
+      Object.keys(next).forEach(id => {
+        if (!serverIds.includes(id)) next[id] = false;
+      });
+      // Ensure all server joins are on locally
+      serverIds.forEach(id => { next[id] = true; });
+
+      await saveJoinedMap(email, next);
+      setJoinedIds(serverIds);
+      Alert.alert('Synced', 'Joined events now match the server.');
+    } catch (e: any) {
+      console.log('[Profile][syncJoinsToServer] error', e);
+      Alert.alert('Error', e?.message || 'Failed to sync joined events with server.');
+    }
+  }, [email]);
 
 
   // --- Time range helpers for TX filters ---
@@ -451,6 +532,35 @@ export default function ProfileScreen() {
       const d = new Date(ts);
       return `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`;
     }
+      // Compact countdown like "Starting in 2d 3h" or "Started 45m ago"
+  function countdownLabel(startTs: number) {
+    const now = Date.now();
+    let diff = startTs - now;
+    const past = diff <= 0;
+    diff = Math.abs(diff);
+
+    const DAY = 24 * 60 * 60 * 1000;
+    const HOUR = 60 * 60 * 1000;
+    const MIN = 60 * 1000;
+
+    const d = Math.floor(diff / DAY);   diff %= DAY;
+    const h = Math.floor(diff / HOUR);  diff %= HOUR;
+    const m = Math.floor(diff / MIN);
+
+    const parts: string[] = [];
+    if (d) parts.push(`${d}d`);
+    if (h) parts.push(`${h}h`);
+    if (m || (!d && !h)) parts.push(`${m}m`);
+
+    return past ? `Started ${parts.join(' ')} ago` : `Starting in ${parts.join(' ')}`;
+  }
+
+  // "soon" = within 1 hour in the future
+  function isSoon(startTs: number) {
+    const now = Date.now();
+    return startTs > now && (startTs - now) <= 60 * 60 * 1000;
+  }
+    
     return { start, end };
   }
   function yearRange(year: number) {
@@ -464,7 +574,34 @@ export default function ProfileScreen() {
     const d = new Date(ts);
     return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
   }
+  // Compact countdown like "Starting in 2d 3h" or "Started 45m ago"
+  function countdownLabel(startTs: number) {
+    const now = Date.now();
+    let diff = startTs - now;
+    const past = diff <= 0;
+    diff = Math.abs(diff);
 
+    const DAY = 24 * 60 * 60 * 1000;
+    const HOUR = 60 * 60 * 1000;
+    const MIN = 60 * 1000;
+
+    const d = Math.floor(diff / DAY);   diff %= DAY;
+    const h = Math.floor(diff / HOUR);  diff %= HOUR;
+    const m = Math.floor(diff / MIN);
+
+    const parts: string[] = [];
+    if (d) parts.push(`${d}d`);
+    if (h) parts.push(`${h}h`);
+    if (m || (!d && !h)) parts.push(`${m}m`);
+
+    return past ? `Started ${parts.join(' ')} ago` : `Starting in ${parts.join(' ')}`;
+  }
+
+  // "soon" = within 1 hour in the future
+  function isSoon(startTs: number) {
+    const now = Date.now();
+    return startTs > now && (startTs - now) <= 60 * 60 * 1000;
+  }
 
   return (
     <ScrollView
@@ -472,6 +609,8 @@ export default function ProfileScreen() {
       stickyHeaderIndices={[2]}
       style={s.container}
       contentContainerStyle={s.content}
+      onScroll={handleScroll}
+      scrollEventThrottle={16}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.ORANGE} />}
     >
       <Text style={s.h1}>Profile</Text>
@@ -482,11 +621,11 @@ export default function ProfileScreen() {
       {/* Sticky quick navigation */}
       <View style={s.stickyWrap} onLayout={setAnchor('profile')}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.stickyRow}>
-          <Chip label="Profile"      onPress={() => scrollToAnchor('profile')} />
-          <Chip label="Balance"      onPress={() => scrollToAnchor('balance')} />
-          <Chip label="Events"       onPress={() => scrollToAnchor('events')} />
-          <Chip label="Transactions" onPress={() => scrollToAnchor('tx')} />
-          <Chip label="Create"       onPress={() => scrollToAnchor('create')} />
+        <Chip label="Profile"      active={activeSection==='profile'} onPress={() => scrollToAnchor('profile')} />
+        <Chip label="Balance"      active={activeSection==='balance'} onPress={() => scrollToAnchor('balance')} />
+        <Chip label="Events"       active={activeSection==='events'}  onPress={() => scrollToAnchor('events')} />
+        <Chip label="Transactions" active={activeSection==='tx'}      onPress={() => scrollToAnchor('tx')} />
+        <Chip label="Create"       active={activeSection==='create'}  onPress={() => scrollToAnchor('create')} />
         </ScrollView>
       </View>
 
@@ -535,9 +674,21 @@ export default function ProfileScreen() {
       <View style={s.card} onLayout={setAnchor('events')}>
         <View style={s.cardHeaderRow}>
           <Text style={s.cardTitle}>Joined Events</Text>
-          <Pressable onPress={() => toggleCollapse('events')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
-            <Ionicons name={collapsed.events ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {hasEmail && hasDemoJoins && (
+              <Pressable onPress={clearDemoJoins} style={s.maintBtn} hitSlop={8}>
+                <Text style={s.maintBtnText}>Clear demo joins</Text>
+              </Pressable>
+            )}
+            {hasEmail && (
+              <Pressable onPress={syncJoinsToServer} style={s.maintBtn} hitSlop={8}>
+                <Text style={s.maintBtnText}>Sync to server</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => toggleCollapse('events')} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+              <Ionicons name={collapsed.events ? 'chevron-down' : 'chevron-up'} size={18} color={colors.MUTED_TEXT} />
+            </Pressable>
+          </View>
         </View>
         {!collapsed.events && (
           <>
@@ -634,26 +785,104 @@ export default function ProfileScreen() {
               <Text style={s.hint}>No joined events match your filters.</Text>
             ) : (
   <>
-    <ScrollView
-      style={s.insetScroll}
-      nestedScrollEnabled
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={{ gap: 10 }}>
-        {visibleEvents.map(ev => (
-          <View key={ev.id} style={s.joinItem}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.evTitle} numberOfLines={1}>{ev.title}</Text>
-              <Text style={s.evMeta}>
-                {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
-              </Text>
-              <View style={s.idRow}>
-                <IdChip id={ev.id} withCopy />
-                <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+          <ScrollView
+        style={s.insetScroll}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator={false}
+      >
+        <View>
+          {visibleEvents.map((ev, idx) => (
+            <View key={ev.id} style={[s.joinItem, idx > 0 && s.joinDivider]}>
+              {/* LEFT COLUMN - Event Details */}
+              <View style={{ flex: 1 }}>
+                {/* Prefer real event name from join meta; fallback to hydrated title */}
+                {(() => {
+                  const j = joinMetaById.get(ev.id);
+                  const title = (j && (history.find(h => (h as any).meta?.eventId === ev.id && (h as any).meta?.type === 'join') as any)?.meta?.eventName) || ev.title;
+                  return (
+                    <Text style={s.evTitle} numberOfLines={1}>{title}</Text>
+                  );
+                })()}
+
+                {/* Date + Location */}
+                <Text style={s.evMeta}>
+                  {ev.date} • {ev.locationType === 'online' ? 'Online' : (ev.venue || 'In person')}
+                </Text>
+                {/* Countdown */}
+                <Text style={[s.countdownText, isSoon(ev.startTs) && { color: colors.ORANGE }]}>
+                  {countdownLabel(ev.startTs)}
+                </Text>
+
+                {/* Paid + Wallet */}
+                {(() => {
+                  const meta = joinMetaById.get(ev.id);
+                  const fee = (meta?.feeCents ?? (typeof ev.fee === 'number' ? ev.fee * 100 : null));
+                  const hasFee = typeof fee === 'number';
+                  const wallet = meta?.usedWallet as 'skill' | 'dollars' | null;
+                  return (
+                    <View style={s.feeRow}>
+                      <Text style={s.feeText}>
+                        {hasFee ? `Paid $${(Number(fee) / 100).toFixed(2)}` : 'Paid —'}
+                      </Text>
+                      {wallet ? (
+                        <View style={[s.walletChip, wallet === 'skill' ? s.walletChipSkill : s.walletChipDollars]}>
+                          <Text style={[s.walletChipText, wallet === 'skill' ? s.walletChipTextSkill : s.walletChipTextDollars]}>
+                            {wallet === 'skill' ? 'Skill' : 'Dollars'}
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={[s.walletChip, s.walletChipUnknown]}>
+                          <Text style={[s.walletChipText, s.walletChipTextUnknown]}>Wallet</Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
+
+                {/* ID + Created + Joined date (non-overlapping) */}
+                {(() => {
+                  const j = joinMetaById.get(ev.id);
+                  return (
+                    <View style={s.idRow}>
+                      <Pressable
+                        onPress={async () => {
+                          await Clipboard.setStringAsync(ev.id);
+                          Alert.alert('Copied', 'Event ID copied to clipboard.');
+                        }}
+                        hitSlop={8}
+                        style={({ pressed }) => [s.idChip, pressed && { opacity: 0.85 }]}
+                        accessibilityLabel="Copy event ID"
+                      >
+                        <Text style={s.idChipText}>ID: {ev.id}</Text>
+                      </Pressable>
+
+                      <View style={{ flexDirection: 'column', alignItems: 'flex-end' }}>
+                        <Text style={s.createdText}>Created {new Date(ev.startTs).toLocaleDateString()}</Text>
+                        {j?.ts ? (
+                          <Text style={s.joinedText}>Joined {new Date(j.ts).toLocaleDateString()}</Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })()}
               </View>
-            </View>
-            <Pressable
-              onPress={() => onUnjoin(ev)}
+
+              {/* RIGHT COLUMN - Unjoin Button */}
+              <Pressable
+              onPress={() => {
+                const j = joinMetaById.get(ev.id);
+                const refundCents = j?.feeCents ?? (typeof ev.fee === 'number' ? ev.fee * 100 : 0);
+                const wallet = j?.usedWallet === 'skill' ? 'Skill' : (j?.usedWallet === 'dollars' ? 'Dollars' : 'original');
+                const title = (history.find(h => (h as any).meta?.eventId === ev.id && (h as any).meta?.type === 'join') as any)?.meta?.eventName || ev.title;
+                Alert.alert(
+                  `Unjoin from ${title}?`,
+                  `You’ll receive a $${(Number(refundCents)/100).toFixed(2)} refund to your ${wallet} wallet.`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Confirm Unjoin', style: 'destructive', onPress: () => onUnjoin(ev) },
+                  ],
+                );
+              }}
               disabled={isUnjoining(ev.id)}
               style={({ pressed }) => [
                 s.unBtn,
@@ -663,10 +892,10 @@ export default function ProfileScreen() {
             >
               <Text style={s.unBtnText}>Unjoin</Text>
             </Pressable>
-          </View>
-        ))}
-      </View>
-    </ScrollView>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
 
     {rows.length > evLimit && (
       <Pressable
@@ -860,6 +1089,8 @@ const s = StyleSheet.create({
   balanceText: { color: colors.TEXT, fontSize: 28, fontWeight: '900' },
   refreshBtn: { backgroundColor: colors.ORANGE, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12 },
   refreshText: { color: colors.WHITE, fontWeight: '800' },
+  maintBtn: { backgroundColor: '#1b1b1e', borderColor: colors.BORDER, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 10 },
+  maintBtnText: { color: colors.TEXT, fontWeight: '800', fontSize: 12 },
   hint: { color: colors.MUTED_TEXT },
 
   filtersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
@@ -915,9 +1146,6 @@ chip: {
   evTitle: { color: colors.TEXT, fontSize: 16, fontWeight: '800' },
   evMeta: { color: colors.MUTED_TEXT, fontSize: 12, marginTop: 2 },
 
-  idRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 10 },
-  createdText: { color: colors.MUTED_TEXT, fontSize: 11 },
-
   // orange outline Unjoin
   unBtn: {
     borderColor: colors.ORANGE,
@@ -952,4 +1180,85 @@ chip: {
   txAmtSkill: { color: '#FF6600', fontWeight: '900' },   // orange
   txAmtDollars: { color: '#16a34a', fontWeight: '900' }, // green
   txAmtDebit: { color: '#ef4444', fontWeight: '900' },   // red
+
+    // —— Joined card: fee + wallet row
+    feeRow: {
+      marginTop: 6,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    feeText: {
+      color: colors.TEXT,
+      fontWeight: '800',
+    },
+    walletChip: {
+      borderRadius: 999,
+      paddingVertical: 4,
+      paddingHorizontal: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+    },
+    walletChipText: {
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    walletChipSkill: {
+      backgroundColor: '#2a170a',
+      borderColor: '#5a2e12',
+    },
+    walletChipTextSkill: {
+      color: '#FF6600',
+    },
+    walletChipDollars: {
+      backgroundColor: '#0a2a1a',
+      borderColor: '#124e2b',
+    },
+    walletChipTextDollars: {
+      color: '#16a34a',
+    },
+    walletChipUnknown: {
+      backgroundColor: '#1b1b1e',
+      borderColor: colors.BORDER,
+    },
+    walletChipTextUnknown: {
+      color: colors.MUTED_TEXT,
+    },
+    // Divider between joined items
+    joinDivider: {
+      borderTopColor: 'rgba(255,255,255,0.06)', // subtler divider on dark
+      borderTopWidth: StyleSheet.hairlineWidth,
+      marginTop: 10,
+      paddingTop: 10,
+    },
+
+  // ID row reflow (no overlap)
+  idRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+
+  // Tap-to-copy ID chip (replaces separate orange copy button)
+  idChip: {
+    backgroundColor: '#1b1b1e',
+    borderColor: colors.BORDER,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    maxWidth: '65%',
+  },
+  idChipText: { color: colors.TEXT, fontWeight: '800' },
+
+  createdText: { color: colors.MUTED_TEXT, fontSize: 12 },
+  joinedText:  { color: colors.MUTED_TEXT, fontSize: 12, marginTop: 2 },
+
+  countdownText: {
+    color: colors.MUTED_TEXT,
+    fontSize: 12,
+    marginTop: 2,
+    fontWeight: '700',
+  },
 });
