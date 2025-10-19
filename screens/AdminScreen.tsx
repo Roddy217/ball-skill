@@ -324,6 +324,21 @@ const [histLimit, setHistLimit] = useState(50);
     }
   }, [peEventId, peTeen, peAdult, pePro, peCeleb, peTotalSpots]);
 
+  const [eventSuggestions, setEventSuggestions] = useState<any[]>([]);
+
+// Function to filter events based on user input
+useEffect(() => {
+  if (rEventId.trim()) {
+    const filtered = events.filter(event =>
+      event.name.toLowerCase().includes(rEventId.toLowerCase()) || 
+      event.id.toLowerCase().includes(rEventId.toLowerCase())
+    );
+    setEventSuggestions(filtered);
+  } else {
+    setEventSuggestions([]);
+  }
+}, [rEventId, events]);
+
   // Seed
   const [seedBusy, setSeedBusy] = useState(false);
 
@@ -392,7 +407,7 @@ const [histLimit, setHistLimit] = useState(50);
   }, [dwEmail, dwAmount, dwWallet, dwMode, dwNote, gEmail]);
 
   // Grant/Deduct
-  const [gEmail, setGEmail] = useState('test@ballskill.com');
+  const [gEmail, setGEmail] = useState('@ballskill.com');
   const [gDelta, setGDelta] = useState('2500'); // cents
   const [gNote, setGNote] = useState('');       // note
   const [gWallet, setGWallet] = useState<'skill'|'dollars'>('dollars');
@@ -1005,32 +1020,64 @@ const [histLimit, setHistLimit] = useState(50);
           )}
         </View>
 
-        {/* Submit Result */}
-        {/* Submit Result */}
-        <View onLayout={(e)=>setYResults(e.nativeEvent.layout.y)} style={s.card}>
-          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+                
+        {/* Enter Drill Results -- Submit Result */}
+        <View onLayout={(e) => setYResults(e.nativeEvent.layout.y)} style={s.card}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
             <Text style={s.cardTitle}>Enter Drill Result</Text>
             <Pressable onPress={() => setOpenResults(v => !v)} hitSlop={8}>
-              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openResults ? 'Collapse' : 'Expand'}</Text>
+              <Text style={{ color: ORANGE, fontWeight: '800' }}>
+                {openResults ? 'Collapse' : 'Expand'}
+              </Text>
             </Pressable>
           </View>
+
           {openResults && (
             <>
-              <Text style={s.meta}>Event ID</Text>
-              <AutoEventId value={rEventId} onChangeText={setREventId} placeholder="eventId (searchable)" style={s.input} />
-
+              {/* Player Email Field (Moved above Event ID field) */}
               <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
-              <AutoEmail value={rEmail} onChangeText={setREmail} placeholder="player email" style={s.input} />
+              <AutoEmail 
+                value={rEmail} 
+                onChangeText={setREmail} 
+                placeholder="player email"
+                style={s.input}
+              />
 
-              {/* Drill Type (dynamic) */}
+              {/* Event ID Field */}
+              <Text style={s.meta}>Event ID</Text>
+              <View style={s.eventIdInputContainer}>
+                <AutoEventId 
+                  value={rEventId}
+                  onChangeText={setREventId}
+                  placeholder="eventId (searchable)"
+                  style={s.input}
+                />
+                
+                {/* Show event suggestions as chips */}
+                {rEventId && eventSuggestions.length > 0 && (
+                  <View style={s.dropdownStyle}>
+                    {eventSuggestions.map((ev) => (
+                      <TouchableOpacity 
+                        key={ev.id}
+                        style={s.chip}
+                        onPress={() => setREventId(ev.id)} // Update Event ID when chip is clicked
+                      >
+                        <Text style={s.chipText}>{ev.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+              {/* Drill Type (Dynamic) */}
               <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
               {availableDrills.length > 0 && (
                 <Text style={[s.meta, { marginTop: -4 }]}>
-                  Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
+                  Available: <Text style={{ color: '#fff' }}>{availableDrills.join(' / ')}</Text>
                 </Text>
               )}
               <View style={s.chipRow}>
-                {availableDrills.map(dt => {
+                {availableDrills.map((dt) => {
                   const selected = rDrill === dt;
                   return (
                     <TouchableOpacity
@@ -1043,6 +1090,8 @@ const [histLimit, setHistLimit] = useState(50);
                   );
                 })}
               </View>
+
+              {/* Made / Attempts Fields */}
               <TextInput
                 style={s.input}
                 placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
@@ -1057,31 +1106,78 @@ const [histLimit, setHistLimit] = useState(50);
               />
 
               {/* Made / Attempts */}
-              <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
                 <Text style={s.smallLabel}>Made</Text>
                 <Text style={s.smallLabel}>Attempts</Text>
               </View>
-              <View style={{ flexDirection:'row', gap:8 }}>
-                <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
-                <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TextInput 
+                  style={[s.input, { flex: 1 }]} 
+                  placeholder="made" 
+                  placeholderTextColor={MUTED} 
+                  value={rMade} 
+                  onChangeText={setRMade} 
+                  keyboardType="number-pad" 
+                />
+                <TextInput 
+                  style={[s.input, { flex: 1 }]} 
+                  placeholder="attempts" 
+                  placeholderTextColor={MUTED} 
+                  value={rAttempts} 
+                  onChangeText={setRAttempts} 
+                  keyboardType="number-pad" 
+                />
               </View>
 
               {/* Time */}
               <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
-              <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
                 <Text style={s.timeLabel}>H</Text>
                 <Text style={s.timeLabel}>M</Text>
                 <Text style={s.timeLabel}>S</Text>
                 <Text style={s.timeLabel}>ms</Text>
               </View>
               <View style={s.timeRow}>
-                <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
-                <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
-                <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
-                <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
+                <TextInput 
+                  style={[s.input, s.timeCell]} 
+                  placeholder="H"  
+                  placeholderTextColor={MUTED} 
+                  value={tH}  
+                  onChangeText={setTH}  
+                  keyboardType="number-pad" 
+                />
+                <TextInput 
+                  style={[s.input, s.timeCell]} 
+                  placeholder="M"  
+                  placeholderTextColor={MUTED} 
+                  value={tM}  
+                  onChangeText={setTM}  
+                  keyboardType="number-pad" 
+                />
+                <TextInput 
+                  style={[s.input, s.timeCell]} 
+                  placeholder="S"  
+                  placeholderTextColor={MUTED} 
+                  value={tS}  
+                  onChangeText={setTS}  
+                  keyboardType="number-pad" 
+                />
+                <TextInput 
+                  style={[s.input, s.timeCell]} 
+                  placeholder="ms" 
+                  placeholderTextColor={MUTED} 
+                  value={tMS} 
+                  onChangeText={setTMS} 
+                  keyboardType="number-pad" 
+                />
               </View>
 
-              <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
+              {/* Submit Result Button */}
+              <TouchableOpacity 
+                disabled={rBusy} 
+                style={[s.btn, rBusy && s.btnDisabled]} 
+                onPress={doSubmit}
+              >
                 <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
               </TouchableOpacity>
             </>
@@ -1146,4 +1242,26 @@ const s = StyleSheet.create({
   timeRow:{ flexDirection:'row', gap:8, marginTop:8 },
   timeCell:{ flex:1 },
   timeLabel:{ color: MUTED, fontSize: 11, width: '25%', textAlign: 'center' },
+
+// Add styles for Event ID input and dropdown
+eventIdInputContainer: {
+  position: 'relative',  // Ensure dropdown can be positioned above the input
+  zIndex: 10,  // Dropdown will now appear above other components
+},
+
+dropdownStyle: {
+  position: 'absolute',
+  top: '100%',  // Dropdown appears directly below the input
+  left: 0,
+  right: 0,
+  zIndex: 20,  // Ensures the dropdown is on top of other elements
+  backgroundColor: '#111',  // Dark background for dropdown
+  borderRadius: 8,
+  maxHeight: 200,
+  overflow: 'scroll',
+  borderWidth: 1,
+  borderColor: '#333',
+  padding: 8,
+},
+
 });

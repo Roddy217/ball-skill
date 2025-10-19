@@ -265,6 +265,60 @@ app.post('/api/events/:id/unjoin', (req, res) => {
   }
 });
 
+// Submit drill results for a user and event
+app.post('/api/events/:eventId/drillResults', async (req, res) => {
+  const { eventId } = req.params;
+  const { userEmail, drillResults } = req.body;  // e.g., { '3PT': 12, 'FT': 15 }
+
+  if (!userEmail || !drillResults) {
+    return res.status(400).json({ success: false, message: 'Missing userEmail or drillResults.' });
+  }
+
+  try {
+    // Verify if the event exists
+    const event = await getEventById(eventId);  // Implement getEventById function
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+    // Verify if the user joined the event
+    const joined = await isUserJoined(eventId, userEmail);  // Implement isUserJoined
+    if (!joined) return res.status(400).json({ success: false, message: 'User not joined to this event.' });
+
+    // Save drill results (implement logic to store them)
+    const result = await saveDrillResults(userEmail, eventId, drillResults);  // Implement saveDrillResults
+    res.status(200).json({ success: true, result });
+  } catch (err) {
+    console.error('[Drill Results Error]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Get event by ID
+async function getEventById(eventId) {
+  // Look up the event by eventId, return null if not found
+  const event = events.find(e => e.id === eventId);  // Example of an event list lookup
+  return event || null;
+}
+
+// Check if a user has joined the event
+async function isUserJoined(eventId, userEmail) {
+  const event = await getEventById(eventId);
+  return event?.registrants?.[userEmail] || false;
+}
+
+// Save drill results (implement storage logic)
+async function saveDrillResults(userEmail, eventId, drillResults) {
+  // You may store results in a database or in-memory; here's an example:
+  const event = await getEventById(eventId);
+  if (!event) throw new Error('Event not found');
+  
+  // If drillResults is valid, save them:
+  event.drillResults = event.drillResults || {};
+  event.drillResults[userEmail] = drillResults;
+
+  // Return saved drill results for the user
+  return event.drillResults[userEmail];
+}
+
 const { PORT = 3001, STRIPE_SECRET_KEY = '' } = process.env;
 
 // ---- In-memory stores ----

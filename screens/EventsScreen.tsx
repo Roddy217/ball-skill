@@ -9,6 +9,17 @@ import { loadJoinedMap, saveJoinedMap, setJoinedLocal } from '../utils/joinState
 import { useAuth } from '../providers/AuthProvider';
 import * as Clipboard from 'expo-clipboard';
 
+// ---- Prize formatting (hoisted) ----
+function formatPrizes(prizes?: number[]): string {
+  if (!Array.isArray(prizes) || prizes.length === 0) return '';
+  // prizes are in cents; render as whole-dollar amounts like $500 • $300 • $200
+  const parts = prizes.map((c) => {
+    const dollars = Math.round(Number(c) / 100);
+    return `$${dollars.toLocaleString()}`;
+  });
+  return parts.join(' • ');
+}
+
 console.log('[Events] api keys:', Object.keys(api));
 
 // --- Shim: getRegistrationStatus missing in api? ---
@@ -274,9 +285,32 @@ function useCountdown(startsAt?: string) {
   }, [startsAt]);
   return left;
 }
-function formatPrizes(prizes?: number[]) {
-  if (!Array.isArray(prizes) || prizes.length === 0) return '';
-  return prizes.map(c => `$${(Number(c||0)/100).toFixed(0)}`).join(' • ');
+function currencyCents(n?: number) {
+  const cents = Number(n || 0);
+  const dollars = cents / 100;
+  return dollars.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+function formatPrizeLine(prizes?: number[], totalCents?: number) {
+  if (!Array.isArray(prizes) || prizes.length === 0) {
+    // If no breakdown but a total exists, show the total only
+    return totalCents ? `Prize Pool: ${currencyCents(totalCents)}` : '';
+  }
+
+  // Back-compat alias for old call sites
+  const formatPrizes = (prizes?: number[]) => formatPrizeLine(prizes, undefined);
+
+  const breakdown = prizes.map(currencyCents).join(' • ');
+  if (!totalCents) return breakdown;
+
+  const sum = prizes.reduce((a, b) => a + (Number(b) || 0), 0);
+  const totalTxt = currencyCents(totalCents);
+
+  // If total equals sum, show both but keep it compact
+  if (sum === totalCents) return `Prize Pool: ${totalTxt} (${breakdown})`;
+
+  // If total differs (e.g., hidden bonuses), still show both
+  return `Prize Pool: ${totalTxt} (${breakdown})`;
 }
 
 // ---- Server events fetch helper (top-level) ----
@@ -359,10 +393,10 @@ function LiveEventsSection({
             </View>
 
             {/* Prizes */}
-            {Array.isArray(ev.prizes) && ev.prizes.length > 0 ? (
+            {(Array.isArray(ev.prizes) && ev.prizes.length > 0) || ev.prizePoolCents ? (
               <View style={s.prizeRow}>
                 <Ionicons name="trophy" size={14} color={colors.MUTED_TEXT} style={{ marginRight: 6 }} />
-                <Text style={s.prizeText}>{formatPrizes(ev.prizes)}</Text>
+                <Text style={s.prizeText}>{formatPrizeLine(ev.prizes, ev.prizePoolCents)}</Text>
               </View>
             ) : null}
 
@@ -451,6 +485,7 @@ export default function EventsScreen() {
 
   const [search, setSearch] = useState<string>('');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('ANY');
+  const [pinnedOnly, setPinnedOnly] = useState(false);
 
   const [timeSuggs, setTimeSuggs] = useState<string[]>([]);
 
@@ -492,6 +527,7 @@ function applySuggestion(phrase: string) {
     setTimeFilter('ANY');
     setFilter('ALL');
     setPage(1);
+    setPinnedOnly(false);
   }, []);
   const [showDemo, setShowDemo] = useState<boolean>(true);
   const [apiBase, setApiBaseState] = useState<string>('');
@@ -825,11 +861,13 @@ useFocusEffect(
   // Normalize LIVE events (server)
   const normalizedLive: NormalizedItem[] = useMemo(() => {
     // Optional local overrides for testing featured/pinned/prizes/celebs on specific server event IDs.
+    // test events/ server events / prizePoolCents: / demo event features / test prizes / Live events
     const OVERRIDES: Record<string, Partial<any>> = {
-      '1ceae5f7baf4': {
+      'eb920f174781': {
         featured: true,
         pinned: true,
-        celebrityGuests: ['Hoop Wizard', 'Court Queen'],
+        celebrityGuests: ['Juleus Wiley', 'Hoop Wizard', 'Court Queen'],
+        prizePoolCents: 100000,
         prizes: [50000, 30000, 20000], // $500 • $300 • $200
       },
     };
@@ -902,8 +940,20 @@ function withinTimeFilter(item: NormalizedItem): boolean {
 }
 
 function matchesSearch(item: NormalizedItem): boolean {
-  const q = stripTimeTermsForSearch(search || '');
+  const q = stripTimeTermsForSearch(search || '').toLowerCase().trim();
   if (!q) return true;
+
+  // Keyword shortcuts for pinned/featured
+  if (q.includes('pinned') || q.includes('featured')) {
+    const raw = (item as any)?.raw || {};
+    return !!raw.pinned || !!raw.featured;
+  }
+
+  // (Optional) Support type keywords, if you want:
+  // if (q.includes('official'))  return !!((item as any)?.raw?.isOfficial);
+  // if (q.includes('community')) return !((item as any)?.raw?.isOfficial);
+
+  // Standard text matching
   return (
     item.title.toLowerCase().includes(q) ||
     (item.venue || '').toLowerCase().includes(q) ||
@@ -924,6 +974,12 @@ const unifiedRows: NormalizedItem[] = useMemo(() => {
   if (filter === 'NEWEST')    rows = [...rows].sort((a,b) => b.startTs - a.startTs);
   if (filter === 'PRICE_ASC') rows = [...rows].sort((a,b) => (a.feeCents - b.feeCents));
   if (filter === 'PRICE_DESC')rows = [...rows].sort((a,b) => (b.feeCents - a.feeCents));
+  if (pinnedOnly) {
+    rows = rows.filter(r => {
+      const raw = (r as any)?.raw || {};
+      return !!raw.pinned || !!raw.featured;
+    });
+  }
 
     // Pinned / Featured priority (only when mixing server+demo)
     rows = [...rows].sort((a, b) => {
@@ -937,7 +993,7 @@ const unifiedRows: NormalizedItem[] = useMemo(() => {
     });
 
   return rows;
-}, [combinedAll, timeFilter, search, filter, joinedMap]);
+}, [combinedAll, timeFilter, search, filter, joinedMap, pinnedOnly]);
 
 const totalShown = unifiedRows.length;
 
@@ -1011,6 +1067,11 @@ const totalShown = unifiedRows.length;
         <Chip label="Joined"     active={filter==='JOINED'}     onPress={() => onSelectFilter('JOINED')} />
         <Chip label="Price ↑"    active={filter==='PRICE_ASC'}  onPress={() => onSelectFilter('PRICE_ASC')} />
         <Chip label="Price ↓"    active={filter==='PRICE_DESC'} onPress={() => onSelectFilter('PRICE_DESC')} />
+        <Chip
+          label="Pinned"
+          active={pinnedOnly}
+          onPress={() => { setPinnedOnly(p => !p); setPage(1); }}
+        />
   
         {/* Clear all */}
         <Chip label="Clear filters" onPress={clearFilters} />
