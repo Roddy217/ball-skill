@@ -564,6 +564,22 @@ useEffect(() => {
   const [playersLoading, setPlayersLoading] = useState(false);
   const [playerQuery, setPlayerQuery] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState<string>('');
+  const refreshPlayers = useCallback(async () => {
+    const id = (rEventId || '').trim();
+    if (!id) return;
+    try {
+      setPlayersLoading(true);
+      const list = await fetchRegisteredPlayers(id);
+      setPlayers(list);
+      // keep selection if the current rEmail is still in the list
+      const match = list.find(p => p.email === (rEmail || '').trim().toLowerCase());
+      setSelectedPlayer(match ? match.email : '');
+    } catch (e) {
+      console.log('[Admin][players] manual refresh error', e);
+    } finally {
+      setPlayersLoading(false);
+    }
+  }, [rEventId, rEmail]);
 
   // Fetch players who joined the selected event (multi-strategy: players, registrations, transactions)
   async function fetchRegisteredPlayers(eventId: string): Promise<Array<{ email: string; name?: string; wallet?: 'skill' | 'dollars'; feeCents?: number; joinedAt?: number }>> {
@@ -1218,10 +1234,27 @@ useEffect(() => {
 
               {/* Registered players for selected event */}
               <View style={{ marginTop: 10 }}>
-                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                  <Text style={s.meta}>Registered Players {rEventId ? `(${players.length})` : ''}</Text>
-                  {playersLoading ? <ActivityIndicator color={ORANGE} /> : null}
-                </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
+                <Text style={s.meta}>
+                  Registered Players <Text style={{ color: '#fff' }}>({filteredPlayers.length})</Text>
+                </Text>
+                <Pressable
+                  onPress={refreshPlayers}
+                  disabled={playersLoading || !(rEventId || '').trim()}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    { borderColor: ORANGE, borderWidth: 1, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+                    pressed && { opacity: 0.9 },
+                    (playersLoading || !(rEventId || '').trim()) && { opacity: 0.6 },
+                  ]}
+                >
+                  {playersLoading ? (
+                    <ActivityIndicator color={ORANGE} />
+                  ) : (
+                    <Text style={{ color: ORANGE, fontWeight: '800' }}>Refresh</Text>
+                  )}
+                </Pressable>
+              </View>
 
                 {rEventId ? (
                   players.length === 0 ? (
