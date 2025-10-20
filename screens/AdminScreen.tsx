@@ -557,6 +557,171 @@ useEffect(() => {
   const [rEventId, setREventId] = useState('');
   const [rEmail, setREmail] = useState('test@ballskill.com');
 
+  
+
+  // Registered players (for selected event)
+  const [players, setPlayers] = useState<Array<{ email: string; name?: string; wallet?: 'skill' | 'dollars'; feeCents?: number; joinedAt?: number }>>([]);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [playerQuery, setPlayerQuery] = useState('');
+  const [selectedPlayer, setSelectedPlayer] = useState<string>('');
+
+  // Fetch players who joined the selected event (multi-strategy: players, registrations, transactions)
+  async function fetchRegisteredPlayers(eventId: string): Promise<Array<{ email: string; name?: string; wallet?: 'skill' | 'dollars'; feeCents?: number; joinedAt?: number }>> {
+    if (!eventId) return [];
+
+    // Helper: normalize raw player-like rows to our shape
+    const normalize = (arr: any[]) => (arr || [])
+      .map((p: any) => ({
+        email: String(p.email || '').toLowerCase(),
+        name: (p.name || p.displayName || '').trim(),
+        wallet: p.wallet === 'skill' ? 'skill' : (p.wallet === 'dollars' ? 'dollars' : undefined),
+        feeCents: Number(p.feeCents ?? p.fee ?? 0),
+        joinedAt: Number(p.joinedAt ?? p.ts ?? p.time ?? 0),
+      }))
+      .filter(p => !!p.email);
+
+    // Helper: build unique list from /transactions payload
+    const fromTransactions = (items: any[], evId: string) => {
+      const byEmail: Record<string, { email: string; name?: string; wallet?: 'skill' | 'dollars'; feeCents?: number; joinedAt?: number }> = {};
+      const want = String(evId).toLowerCase();
+      for (const it of (items || [])) {
+        const meta = it?.meta || {};
+        const type = String(meta?.type || '').toLowerCase();
+        const eId  = String(meta?.eventId || '').toLowerCase();
+        const email = String(it?.email || '').toLowerCase();
+        if (!email || eId !== want || type !== 'join') continue;
+
+        const wallet = (meta?.usedWallet === 'skill' ? 'skill' : (meta?.usedWallet === 'dollars' ? 'dollars' : undefined)) as ('skill'|'dollars'|undefined);
+        const feeCents = Number(meta?.feeCents ?? meta?.fee ?? 0);
+        const joinedAt = Number(it?.ts || 0);
+        const name = String(meta?.name || meta?.displayName || '').trim();
+
+        const existing = byEmail[email];
+        if (!existing || (joinedAt && joinedAt > (existing.joinedAt || 0))) {
+          byEmail[email] = { email, name, wallet, feeCents, joinedAt };
+        }
+      }
+      return Object.values(byEmail).sort((a, b) => (b.joinedAt || 0) - (a.joinedAt || 0));
+    };
+
+    // 1) Primary: /events/:id/players
+    try {
+      const data = await getJSON<{ success: boolean; players?: any[]; items?: any[] }>(`/events/${encodeURIComponent(eventId)}/players`);
+      const raw = Array.isArray(data?.players) ? data.players : (Array.isArray(data?.items) ? data.items : []);
+      const list = normalize(raw);
+      if (list.length) {
+        console.log('[Admin][players] /players OK', { eventId, count: list.length });
+        return list;
+      }
+      console.log('[Admin][players] /players empty, falling back…', { eventId });
+    } catch (e) {
+      console.log('[Admin][players] /players failed, falling back…', { eventId, e });
+    }
+
+    // 2) Legacy: /events/:id/registrations
+    try {
+      const data = await getJSON<{ success: boolean; registrations?: any[]; items?: any[] }>(`/events/${encodeURIComponent(eventId)}/registrations`);
+      const raw = Array.isArray(data?.registrations) ? data.registrations : (Array.isArray(data?.items) ? data.items : []);
+      const list = normalize(raw);
+      if (list.length) {
+        console.log('[Admin][players] /registrations OK', { eventId, count: list.length });
+        return list;
+      }
+      console.log('[Admin][players] /registrations empty, falling back to transactions…', { eventId });
+    } catch (e2) {
+      console.log('[Admin][players] /registrations failed, falling back to transactions…', { eventId, e2 });
+    }
+
+    // 3a) First try a filtered transactions search (servers that support ?q)
+    try {
+      const qs = new URLSearchParams({ limit: '1000', q: eventId });
+      const data = await getJSON<{ success: boolean; items: Array<any> }>(`/transactions?${qs.toString()}`);
+      const list = fromTransactions(Array.isArray(data?.items) ? data.items : [], eventId);
+      if (list.length) {
+        console.log('[Admin][players] /transactions?q derived', { eventId, count: list.length });
+        return list;
+      }
+    } catch (e3) {
+      console.log('[Admin][players] /transactions?q failed, trying other shapes…', { eventId, e3 });
+    }
+
+    // 3b) Some servers support /transactions?eventId=…
+    try {
+      const qs2 = new URLSearchParams({ limit: '1000', eventId });
+      const data2 = await getJSON<{ success: boolean; items: Array<any> }>(`/transactions?${qs2.toString()}`);
+      const list2 = fromTransactions(Array.isArray(data2?.items) ? data2.items : [], eventId);
+      if (list2.length) {
+        console.log('[Admin][players] /transactions?eventId derived', { eventId, count: list2.length });
+        return list2;
+      }
+    } catch (e4) {
+      console.log('[Admin][players] /transactions?eventId failed, last resort full scan…', { eventId, e4 });
+    }
+
+    // 3c) Final fallback: pull a larger page and filter on the client
+    try {
+      const data3 = await getJSON<{ success: boolean; items: Array<any> }>(`/transactions?limit=5000`);
+      const list3 = fromTransactions(Array.isArray(data3?.items) ? data3.items : [], eventId);
+      console.log('[Admin][players] /transactions full-scan derived', { eventId, count: list3.length });
+      return list3;
+    } catch (e5) {
+      console.log('[Admin][players] transactions fallback failed', { eventId, e5 });
+      return [];
+    }
+  }
+
+  // load players when event changes
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const id = (rEventId || '').trim();
+      if (!id) {
+        if (!cancelled) {
+          setPlayers([]);
+          setSelectedPlayer('');
+        }
+        return;
+      }
+      try {
+        setPlayersLoading(true);
+        const list = await fetchRegisteredPlayers(id);
+        if (!cancelled) {
+          setPlayers(list);
+          // If the current rEmail matches one of the players, keep selection in sync
+          const match = list.find(p => p.email === (rEmail || '').trim().toLowerCase());
+          setSelectedPlayer(match ? match.email : '');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.log('[Admin][players] load error', err);
+          setPlayers([]);
+          setSelectedPlayer('');
+        }
+      } finally {
+        if (!cancelled) setPlayersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [rEventId]);
+
+  // filter players by search
+  const filteredPlayers = useMemo(() => {
+    const q = playerQuery.trim().toLowerCase();
+    if (!q) return players;
+    return players.filter(p =>
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.email || '').toLowerCase().includes(q)
+    );
+  }, [playerQuery, players]);
+
+  // helper formatters
+  const fmtJoinDate = (ts?: number) => {
+    if (!ts) return '';
+    try {
+      return new Date(ts).toLocaleDateString();
+    } catch { return ''; }
+  };
+
   // Dynamic drills
   const [availableDrills, setAvailableDrills] = useState<string[]>(DEFAULT_DRILLS);
   const [rDrill, setRDrill] = useState<string>('FT');
@@ -1020,64 +1185,105 @@ useEffect(() => {
           )}
         </View>
 
-                
+        
+
         {/* Enter Drill Results -- Submit Result */}
-        <View onLayout={(e) => setYResults(e.nativeEvent.layout.y)} style={s.card}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <View onLayout={(e)=>setYResults(e.nativeEvent.layout.y)} style={s.card}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
             <Text style={s.cardTitle}>Enter Drill Result</Text>
             <Pressable onPress={() => setOpenResults(v => !v)} hitSlop={8}>
-              <Text style={{ color: ORANGE, fontWeight: '800' }}>
-                {openResults ? 'Collapse' : 'Expand'}
-              </Text>
+              <Text style={{ color: ORANGE, fontWeight:'800' }}>{openResults ? 'Collapse' : 'Expand'}</Text>
             </Pressable>
           </View>
 
           {openResults && (
             <>
-              {/* Player Email Field (Moved above Event ID field) */}
+              {/* Player Email on top (per z-index workaround) */}
               <Text style={[s.meta, { marginTop: 10 }]}>Player Email</Text>
-              <AutoEmail 
-                value={rEmail} 
-                onChangeText={setREmail} 
+              <AutoEmail
+                value={rEmail}
+                onChangeText={setREmail}
                 placeholder="player email"
                 style={s.input}
               />
 
-              {/* Event ID Field */}
+              {/* Event ID field */}
               <Text style={s.meta}>Event ID</Text>
-              <View style={s.eventIdInputContainer}>
-                <AutoEventId 
-                  value={rEventId}
-                  onChangeText={setREventId}
-                  placeholder="eventId (searchable)"
-                  style={s.input}
-                />
-                
-                {/* Show event suggestions as chips */}
-                {rEventId && eventSuggestions.length > 0 && (
-                  <View style={s.dropdownStyle}>
-                    {eventSuggestions.map((ev) => (
-                      <TouchableOpacity 
-                        key={ev.id}
-                        style={s.chip}
-                        onPress={() => setREventId(ev.id)} // Update Event ID when chip is clicked
-                      >
-                        <Text style={s.chipText}>{ev.name}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+              <AutoEventId
+                value={rEventId}
+                onChangeText={setREventId}
+                placeholder="eventId (searchable)"
+                style={s.input}
+              />
+
+              {/* Registered players for selected event */}
+              <View style={{ marginTop: 10 }}>
+                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                  <Text style={s.meta}>Registered Players {rEventId ? `(${players.length})` : ''}</Text>
+                  {playersLoading ? <ActivityIndicator color={ORANGE} /> : null}
+                </View>
+
+                {rEventId ? (
+                  players.length === 0 ? (
+                    <Text style={[s.meta, { marginTop: 2 }]}>No players registered for this event yet.</Text>
+                  ) : (
+                    <View style={s.playersListBox}>
+                      <TextInput
+                        value={playerQuery}
+                        onChangeText={setPlayerQuery}
+                        placeholder="Search players (name or email)…"
+                        placeholderTextColor={MUTED}
+                        style={[s.input, { marginTop: 0, borderRadius: 8 }]}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+
+                      <ScrollView style={{ maxHeight: 300, marginTop: 8 }} nestedScrollEnabled>
+                        {filteredPlayers.map((p) => {
+                          const selected = selectedPlayer === p.email;
+                          const fee = typeof p.feeCents === 'number' ? toDollars(p.feeCents) : '';
+                          return (
+                            <Pressable
+                              key={p.email}
+                              onPress={() => { setSelectedPlayer(p.email); setREmail(p.email); }}
+                              style={({pressed}) => [
+                                s.playerRow,
+                                selected && s.playerRowSelected,
+                                pressed && { opacity: 0.9 },
+                              ]}
+                              hitSlop={6}
+                            >
+                              <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+                                <View style={{ flex: 1, paddingRight: 8 }}>
+                                  <Text style={s.playerName}>{p.name || p.email}</Text>
+                                  <Text style={s.playerEmail}>{p.email}</Text>
+                                  <Text style={s.playerMeta}>
+                                    {p.wallet ? (p.wallet === 'skill' ? '[Skill]' : '[Dollars]') : ''}{p.wallet ? ' ' : ''}
+                                    {fee ? `$${fee}` : ''}{fee ? ' • ' : ''}{fmtJoinDate(p.joinedAt)}
+                                  </Text>
+                                </View>
+                                {selected ? <Text style={{ color: ORANGE, fontWeight:'800' }}>✓</Text> : null}
+                              </View>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  )
+                ) : (
+                  <Text style={[s.meta, { marginTop: 2 }]}>Type or select an Event ID to see registered players.</Text>
                 )}
               </View>
 
-              {/* Drill Type (Dynamic) */}
+              {/* Drill Type (dynamic) */}
               <Text style={[s.meta, { marginTop: 10 }]}>Drill Type</Text>
               {availableDrills.length > 0 && (
                 <Text style={[s.meta, { marginTop: -4 }]}>
-                  Available: <Text style={{ color: '#fff' }}>{availableDrills.join(' / ')}</Text>
+                  Available: <Text style={{color:'#fff'}}>{availableDrills.join(' / ')}</Text>
                 </Text>
               )}
               <View style={s.chipRow}>
-                {availableDrills.map((dt) => {
+                {availableDrills.map(dt => {
                   const selected = rDrill === dt;
                   return (
                     <TouchableOpacity
@@ -1090,8 +1296,6 @@ useEffect(() => {
                   );
                 })}
               </View>
-
-              {/* Made / Attempts Fields */}
               <TextInput
                 style={s.input}
                 placeholder={`type to set (e.g., ${availableDrills[0] || 'FT'})`}
@@ -1106,78 +1310,31 @@ useEffect(() => {
               />
 
               {/* Made / Attempts */}
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+              <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:8 }}>
                 <Text style={s.smallLabel}>Made</Text>
                 <Text style={s.smallLabel}>Attempts</Text>
               </View>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TextInput 
-                  style={[s.input, { flex: 1 }]} 
-                  placeholder="made" 
-                  placeholderTextColor={MUTED} 
-                  value={rMade} 
-                  onChangeText={setRMade} 
-                  keyboardType="number-pad" 
-                />
-                <TextInput 
-                  style={[s.input, { flex: 1 }]} 
-                  placeholder="attempts" 
-                  placeholderTextColor={MUTED} 
-                  value={rAttempts} 
-                  onChangeText={setRAttempts} 
-                  keyboardType="number-pad" 
-                />
+              <View style={{ flexDirection:'row', gap:8 }}>
+                <TextInput style={[s.input, { flex:1 }]} placeholder="made" placeholderTextColor={MUTED} value={rMade} onChangeText={setRMade} keyboardType="number-pad" />
+                <TextInput style={[s.input, { flex:1 }]} placeholder="attempts" placeholderTextColor={MUTED} value={rAttempts} onChangeText={setRAttempts} keyboardType="number-pad" />
               </View>
 
               {/* Time */}
               <Text style={[s.meta, { marginTop: 10 }]}>Time</Text>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+              <View style={{ flexDirection:'row', justifyContent:'space-between', marginTop:4 }}>
                 <Text style={s.timeLabel}>H</Text>
                 <Text style={s.timeLabel}>M</Text>
                 <Text style={s.timeLabel}>S</Text>
                 <Text style={s.timeLabel}>ms</Text>
               </View>
               <View style={s.timeRow}>
-                <TextInput 
-                  style={[s.input, s.timeCell]} 
-                  placeholder="H"  
-                  placeholderTextColor={MUTED} 
-                  value={tH}  
-                  onChangeText={setTH}  
-                  keyboardType="number-pad" 
-                />
-                <TextInput 
-                  style={[s.input, s.timeCell]} 
-                  placeholder="M"  
-                  placeholderTextColor={MUTED} 
-                  value={tM}  
-                  onChangeText={setTM}  
-                  keyboardType="number-pad" 
-                />
-                <TextInput 
-                  style={[s.input, s.timeCell]} 
-                  placeholder="S"  
-                  placeholderTextColor={MUTED} 
-                  value={tS}  
-                  onChangeText={setTS}  
-                  keyboardType="number-pad" 
-                />
-                <TextInput 
-                  style={[s.input, s.timeCell]} 
-                  placeholder="ms" 
-                  placeholderTextColor={MUTED} 
-                  value={tMS} 
-                  onChangeText={setTMS} 
-                  keyboardType="number-pad" 
-                />
+                <TextInput style={[s.input, s.timeCell]} placeholder="H"  placeholderTextColor={MUTED} value={tH}  onChangeText={setTH}  keyboardType="number-pad" />
+                <TextInput style={[s.input, s.timeCell]} placeholder="M"  placeholderTextColor={MUTED} value={tM}  onChangeText={setTM}  keyboardType="number-pad" />
+                <TextInput style={[s.input, s.timeCell]} placeholder="S"  placeholderTextColor={MUTED} value={tS}  onChangeText={setTS}  keyboardType="number-pad" />
+                <TextInput style={[s.input, s.timeCell]} placeholder="ms" placeholderTextColor={MUTED} value={tMS} onChangeText={setTMS} keyboardType="number-pad" />
               </View>
 
-              {/* Submit Result Button */}
-              <TouchableOpacity 
-                disabled={rBusy} 
-                style={[s.btn, rBusy && s.btnDisabled]} 
-                onPress={doSubmit}
-              >
+              <TouchableOpacity disabled={rBusy} style={[s.btn, rBusy && s.btnDisabled]} onPress={doSubmit}>
                 <Text style={s.btnText}>{rBusy ? 'Saving…' : 'Save Result'}</Text>
               </TouchableOpacity>
             </>
@@ -1263,5 +1420,26 @@ dropdownStyle: {
   borderColor: '#333',
   padding: 8,
 },
+
+// Registered players list
+playersListBox: {
+  backgroundColor: '#0b0b0b',
+  borderColor: '#1e1e1e',
+  borderWidth: 1,
+  borderRadius: 10,
+  padding: 8,
+},
+playerRow: {
+  paddingVertical: 10,
+  paddingHorizontal: 8,
+  borderBottomColor: '#161616',
+  borderBottomWidth: 1,
+},
+playerRowSelected: {
+  backgroundColor: '#141414',
+},
+playerName: { color:'#fff', fontWeight:'800', fontSize: 14 },
+playerEmail: { color:'#cfcfcf', fontSize: 12, marginTop: 2 },
+playerMeta: { color: '#9a9a9a', fontSize: 12, marginTop: 2 },
 
 });
